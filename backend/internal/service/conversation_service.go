@@ -69,6 +69,8 @@ type GroupDTO struct {
 	Status         string  `json:"status"`
 	MemberCount    uint32  `json:"member_count"`
 	MaxMembers     uint32  `json:"max_members"`
+	CreatedAt      string  `json:"created_at"`
+	UpdatedAt      string  `json:"updated_at"`
 }
 
 // ConversationDTO matches the frozen `Conversation` object in docs/api.md.
@@ -413,6 +415,8 @@ func (s *ConversationService) GetConversationDetail(
 			Status:         group.Status,
 			MemberCount:    memberCount,
 			MaxMembers:     group.MaxMembers,
+			CreatedAt:      FormatUTCMillis(group.CreatedAt),
+			UpdatedAt:      FormatUTCMillis(group.UpdatedAt),
 		}
 	default:
 		return nil, errcode.ErrInternalConsistency

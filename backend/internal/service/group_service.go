@@ -25,14 +25,14 @@ import (
 )
 
 const (
-	DefaultGroupMaxMembers  uint32 = 500
-	DefaultGroupListLimit          = 20
-	MaxGroupListLimit              = 100
-	MaxGroupNameRunes              = 100
-	MaxGroupAnnounceRunes          = 2000
-	MaxGroupNicknameRunes          = 64
-	MaxAssetIDLength               = 36
-	memberOnlineScanChunk          = 200
+	DefaultGroupMaxMembers uint32 = 500
+	DefaultGroupListLimit         = 20
+	MaxGroupListLimit             = 100
+	MaxGroupNameRunes             = 100
+	MaxGroupAnnounceRunes         = 2000
+	MaxGroupNicknameRunes         = 64
+	MaxAssetIDLength              = 36
+	memberOnlineScanChunk         = 200
 
 	groupListCursorScope   = "groups"
 	groupMemberCursorScope = "group_members"
@@ -51,20 +51,8 @@ type GroupAuditMeta struct {
 	UserAgent string
 }
 
-// GroupDTO matches the frozen Group object in docs/api.md.
-type GroupDTO struct {
-	ID             uint64  `json:"id,string"`
-	ConversationID uint64  `json:"conversation_id,string"`
-	Name           string  `json:"name"`
-	AvatarURL      string  `json:"avatar_url"`
-	Announcement   *string `json:"announcement"`
-	OwnerID        uint64  `json:"owner_id,string"`
-	Status         string  `json:"status"`
-	MemberCount    int     `json:"member_count"`
-	MaxMembers     uint32  `json:"max_members"`
-	CreatedAt      string  `json:"created_at"`
-	UpdatedAt      string  `json:"updated_at"`
-}
+// GroupDTO is declared in conversation_service.go so both chat and group
+// APIs share one frozen Group object (including created_at / updated_at).
 
 // GroupSummaryDTO represents a Group summary item in GET /api/v1/groups.
 type GroupSummaryDTO struct {
@@ -354,16 +342,16 @@ func (s *GroupService) Create(ctx context.Context, creatorID uint64, input Creat
 	allUserIDs := append([]uint64{creatorID}, otherMemberIDs...)
 
 	var (
-		createdGroup  model.Group
-		createdConv   model.Conversation
-		memberModels  []model.GroupMember
-		sysMsg        model.Message
-		usersByID     map[uint64]model.User
-		lockedConvID  uint64
-		lockToken     string
-		seqRes        *repository.SeqReservation
-		creatorCM     model.ConversationMember
-		now           time.Time
+		createdGroup model.Group
+		createdConv  model.Conversation
+		memberModels []model.GroupMember
+		sysMsg       model.Message
+		usersByID    map[uint64]model.User
+		lockedConvID uint64
+		lockToken    string
+		seqRes       *repository.SeqReservation
+		creatorCM    model.ConversationMember
+		now          time.Time
 	)
 
 	releaseLock := func() {
@@ -1797,9 +1785,9 @@ func (s *GroupService) Transfer(ctx context.Context, actorID, groupID, targetUse
 	defer s.releaseConvLock(ctx, conv.ID, lockToken)
 
 	var (
-		sysMsg      model.Message
-		notifyIDs   []uint64
-		seqRes      *repository.SeqReservation
+		sysMsg        model.Message
+		notifyIDs     []uint64
+		seqRes        *repository.SeqReservation
 		oldTargetRole string
 	)
 
@@ -2676,6 +2664,10 @@ func truncateRunes(s string, maxRunes int) string {
 }
 
 func toGroupDTO(g model.Group, convID uint64, memberCount int) GroupDTO {
+	var count uint32
+	if memberCount > 0 {
+		count = uint32(memberCount)
+	}
 	return GroupDTO{
 		ID:             g.ID,
 		ConversationID: convID,
@@ -2684,7 +2676,7 @@ func toGroupDTO(g model.Group, convID uint64, memberCount int) GroupDTO {
 		Announcement:   g.Announcement,
 		OwnerID:        g.OwnerID,
 		Status:         g.Status,
-		MemberCount:    memberCount,
+		MemberCount:    count,
 		MaxMembers:     g.MaxMembers,
 		CreatedAt:      FormatUTCMillis(g.CreatedAt),
 		UpdatedAt:      FormatUTCMillis(g.UpdatedAt),

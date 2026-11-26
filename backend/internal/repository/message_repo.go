@@ -25,8 +25,6 @@ const (
 var (
 	// ErrMessageNotFound indicates the requested message does not exist in the conversation.
 	ErrMessageNotFound = errors.New("message not found")
-	// ErrAssetNotFound indicates the referenced upload asset does not exist or is deleted.
-	ErrAssetNotFound = errors.New("asset not found")
 	// ErrDedupeInProgress indicates an identical (sender_id, client_msg_id) send is currently in flight.
 	ErrDedupeInProgress = errors.New("message send in progress")
 
