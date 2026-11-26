@@ -180,6 +180,7 @@ func buildRouter(
 	assetRepo := repository.NewAssetRepository(db)
 	convRepo := repository.NewConversationRepository(db)
 	msgRepo := repository.NewMessageRepository(db, rdb)
+	receiptRepo := repository.NewReceiptRepository(db)
 	seqAllocator := repository.NewRedisSeqAllocator(rdb, 5*time.Second)
 	frPresence := repository.NewRedisPresenceChecker(rdb)
 
@@ -208,12 +209,15 @@ func buildRouter(
 		// Default Stage 7+ production path: XADD im:stream:messages / im:stream:events; online msg.push is owned by im-msg-deliver.
 		msgSvc.SetStreamPublisher(newRedisStreamPublisherAdapter(repository.NewRedisStreamPublisher(rdb)))
 	}
+	receiptSvc := service.NewReceiptService(receiptRepo, friendRepo, nil, log)
 	hub.SetChatService(msgSvc)
+	hub.SetReceiptService(receiptSvc)
 	groupRepo := repository.NewGormGroupRepository(db)
 	groupSvc := service.NewGroupService(groupRepo, seqAllocator, frPresence, idGen, hub, log)
 
 	mqProducer := mq.NewProducer(rdb, cfg.MQ, log)
 	mqManager := mq.NewConsumerManager(cfg.MQ, cfg.App.NodeID, rdb, db, hub, log)
+	receiptSvc.SetEventPublisher(newMQReceiptEventPublisher(mqProducer))
 
 	router := api.NewRouterWithStage4(cfg, log, healthCtrl, api.Stage4Dependencies{
 		JWTAuth:           jwtAuth,
@@ -227,6 +231,7 @@ func buildRouter(
 		JWTAuth:                jwtAuth,
 		ConversationController: controller.NewConversationController(convSvc),
 		MessageController:      controller.NewMessageController(msgSvc),
+		ReceiptController:      controller.NewReceiptController(receiptSvc),
 	})
 	api.RegisterGroupRoutes(router, jwtAuth, controller.NewGroupController(groupSvc))
 	api.RegisterWSRoute(router, cfg, hub)
@@ -273,6 +278,47 @@ func (a *redisStreamPublisherAdapter) PublishEvent(ctx context.Context, evt serv
 		Seq:            evt.Seq,
 		Payload:        evt.Payload,
 	})
+}
+
+
+type mqReceiptEventPublisher struct {
+	producer *mq.StreamProducer
+}
+
+func newMQReceiptEventPublisher(producer *mq.StreamProducer) service.ReceiptEventPublisher {
+	if producer == nil {
+		return nil
+	}
+	return &mqReceiptEventPublisher{producer: producer}
+}
+
+func (p *mqReceiptEventPublisher) PublishEvent(ctx context.Context, event service.ReceiptEvent) error {
+	var messageID, seq uint64
+	if event.MsgID != nil {
+		messageID = *event.MsgID
+	}
+	if event.Seq != nil {
+		seq = *event.Seq
+	}
+	var occurredAt time.Time
+	if ts := event.UpdatedAt; ts != "" {
+		if parsed, err := time.Parse("2006-01-02T15:04:05.000Z", ts); err == nil {
+			occurredAt = parsed
+		}
+	}
+	_, err := p.producer.PublishEvent(ctx, mq.EventRecord{
+		Kind:             event.Kind,
+		Event:            event.Kind,
+		ConversationID:   event.ConversationID,
+		ActorID:          event.UserID,
+		TargetUserIDs:    event.TargetUserIDs,
+		MessageID:        messageID,
+		Seq:              seq,
+		LastDeliveredSeq: event.LastDeliveredSeq,
+		LastReadSeq:      event.LastReadSeq,
+		OccurredAt:       occurredAt,
+	})
+	return err
 }
 
 func newLoggedNoopSessionRevokeHook(log *slog.Logger) service.SessionRevokeHook {

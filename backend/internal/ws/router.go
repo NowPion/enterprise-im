@@ -67,8 +67,10 @@ func (hub *Hub) dispatch(client *Client, env envelope, sessionExpiry time.Time) 
 		hub.handleMsgSend(client, env)
 	case "msg.recall":
 		hub.handleMsgRecall(client, env)
-	case "msg.delivered_ack", "msg.read_ack":
-		client.enqueue(errorFrame(env, errcode.ErrWSStateConflict.WithMessage("本阶段不处理发送/回执/撤回，消息与回执状态未变更")))
+	case "msg.delivered_ack":
+		hub.handleMsgDeliveredAck(client, env)
+	case "msg.read_ack":
+		hub.handleMsgReadAck(client, env)
 	case "msg.ack", "msg.push", "presence.update", "pong", "system.notice":
 		client.enqueue(errorFrame(env, errcode.ErrWSStateConflict.WithMessage("frame type is server-to-client only")))
 	default:
@@ -87,6 +89,25 @@ type wsMsgSendData struct {
 type wsMsgRecallData struct {
 	ConversationID string `json:"conversation_id"`
 	MsgID          string `json:"msg_id"`
+}
+
+type wsMsgDeliveredAckData struct {
+	MsgID          string `json:"msg_id"`
+	ConversationID string `json:"conversation_id"`
+	Seq            string `json:"seq"`
+}
+
+type wsMsgReadAckData struct {
+	ConversationID string `json:"conversation_id"`
+	LastReadSeq    string `json:"last_read_seq"`
+}
+
+func (hub *Hub) handlerTimeout() time.Duration {
+	timeout := hub.cfg.WriteTimeout
+	if timeout < 5*time.Second {
+		timeout = 5 * time.Second
+	}
+	return timeout
 }
 
 func (hub *Hub) handleMsgSend(client *Client, env envelope) {
@@ -115,11 +136,7 @@ func (hub *Hub) handleMsgSend(client *Client, env envelope) {
 		content = *payload.Content
 	}
 
-	timeout := hub.cfg.WriteTimeout
-	if timeout < 5*time.Second {
-		timeout = 5 * time.Second
-	}
-	ctx, cancel := context.WithTimeout(client.ctx, timeout)
+	ctx, cancel := context.WithTimeout(client.ctx, hub.handlerTimeout())
 	defer cancel()
 
 	_, bizErr := chat.SendMessage(ctx, service.SendMessageInput{
@@ -167,11 +184,7 @@ func (hub *Hub) handleMsgRecall(client *Client, env envelope) {
 		return
 	}
 
-	timeout := hub.cfg.WriteTimeout
-	if timeout < 5*time.Second {
-		timeout = 5 * time.Second
-	}
-	ctx, cancel := context.WithTimeout(client.ctx, timeout)
+	ctx, cancel := context.WithTimeout(client.ctx, hub.handlerTimeout())
 	defer cancel()
 
 	_, bizErr := chat.RecallMessage(ctx, client.lease.UserID, convID, msgID, func(res *service.RecallMessageResult) {
@@ -190,6 +203,78 @@ func (hub *Hub) handleMsgRecall(client *Client, env envelope) {
 	if bizErr != nil {
 		client.enqueue(errorFrame(env, mapWSChatError(bizErr)))
 	}
+}
+
+func (hub *Hub) handleMsgDeliveredAck(client *Client, env envelope) {
+	receipt := hub.receiptService()
+	if receipt == nil {
+		client.enqueue(errorFrame(env, errcode.ErrWSStateConflict.WithMessage("receipt service is not attached to hub")))
+		return
+	}
+
+	var payload wsMsgDeliveredAckData
+	if err := json.Unmarshal(env.Data, &payload); err != nil {
+		client.enqueue(errorFrame(env, errcode.ErrWSInvalidEnvelope))
+		return
+	}
+	convID, convOK := parsePositiveWSUint64(payload.ConversationID)
+	msgID, msgOK := parsePositiveWSUint64(payload.MsgID)
+	seq, seqOK := parsePositiveWSUint64(payload.Seq)
+	if !convOK || !msgOK || !seqOK {
+		client.enqueue(errorFrame(env, errcode.ErrWSInvalidEnvelope))
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(client.ctx, hub.handlerTimeout())
+	defer cancel()
+
+	if _, bizErr := receipt.AckDeliveredWS(ctx, client.lease.UserID, convID, msgID, seq); bizErr != nil {
+		client.enqueue(errorFrame(env, mapWSChatError(bizErr)))
+	}
+}
+
+func (hub *Hub) handleMsgReadAck(client *Client, env envelope) {
+	receipt := hub.receiptService()
+	if receipt == nil {
+		client.enqueue(errorFrame(env, errcode.ErrWSStateConflict.WithMessage("receipt service is not attached to hub")))
+		return
+	}
+
+	var payload wsMsgReadAckData
+	if err := json.Unmarshal(env.Data, &payload); err != nil {
+		client.enqueue(errorFrame(env, errcode.ErrWSInvalidEnvelope))
+		return
+	}
+	convID, convOK := parsePositiveWSUint64(payload.ConversationID)
+	lastReadSeq, seqOK := parseNonNegativeWSUint64(payload.LastReadSeq)
+	if !convOK || !seqOK {
+		client.enqueue(errorFrame(env, errcode.ErrWSInvalidEnvelope))
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(client.ctx, hub.handlerTimeout())
+	defer cancel()
+
+	if _, bizErr := receipt.AckReadWS(ctx, client.lease.UserID, convID, lastReadSeq); bizErr != nil {
+		client.enqueue(errorFrame(env, mapWSChatError(bizErr)))
+	}
+}
+
+func parseNonNegativeWSUint64(raw string) (uint64, bool) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return 0, false
+	}
+	for i := 0; i < len(trimmed); i++ {
+		if trimmed[i] < '0' || trimmed[i] > '9' {
+			return 0, false
+		}
+	}
+	val, err := strconv.ParseUint(trimmed, 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return val, true
 }
 
 func parsePositiveWSUint64(raw string) (uint64, bool) {
