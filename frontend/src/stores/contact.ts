@@ -11,6 +11,14 @@ import type {
   FriendRequestStatus,
 } from '@/types/friend'
 import type { User, UserSearchParams } from '@/types/user'
+import type { WSClient } from '@/utils/wsClient'
+
+export interface PresenceUpdatePayload {
+  user_id: string
+  online: boolean
+  last_online_at?: string | null
+  device_count?: number
+}
 
 export const useContactStore = defineStore('contact', () => {
   const friends = ref<FriendItem[]>([])
@@ -34,6 +42,7 @@ export const useContactStore = defineStore('contact', () => {
 
   const conversationIdMap = ref<Record<string, string>>({})
   let lastSearchParams: UserSearchParams | null = null
+  let boundWSClient: WSClient | null = null
   let realtimeUnbinders: Array<() => void> = []
 
   const pendingReceivedCount = computed(
@@ -46,7 +55,31 @@ export const useContactStore = defineStore('contact', () => {
     return friends.value.find((item) => item.friend_id === friendId)
   }
 
-  function applyPresenceUpdate(userId: string, online: boolean, lastOnlineAt: string | null) {
+  function applyPresenceUpdate(payload: PresenceUpdatePayload): void
+  function applyPresenceUpdate(userId: string, online: boolean, lastOnlineAt?: string | null): void
+  function applyPresenceUpdate(
+    userIdOrPayload: string | PresenceUpdatePayload,
+    onlineArg?: boolean,
+    lastOnlineAtArg: string | null = null,
+  ): void {
+    let userId: string
+    let online: boolean
+    let lastOnlineAt: string | null
+
+    if (typeof userIdOrPayload === 'object' && userIdOrPayload !== null) {
+      if (typeof userIdOrPayload.user_id !== 'string' || !userIdOrPayload.user_id) return
+      userId = userIdOrPayload.user_id
+      online = Boolean(userIdOrPayload.online)
+      lastOnlineAt =
+        typeof userIdOrPayload.last_online_at === 'string'
+          ? userIdOrPayload.last_online_at
+          : null
+    } else {
+      userId = userIdOrPayload
+      online = Boolean(onlineArg)
+      lastOnlineAt = typeof lastOnlineAtArg === 'string' ? lastOnlineAtArg : null
+    }
+
     friends.value.forEach((friend) => {
       if (friend.friend_id === userId || friend.user.id === userId) {
         friend.online = online
@@ -77,17 +110,21 @@ export const useContactStore = defineStore('contact', () => {
     })
   }
 
-  function bindRealtimeListeners() {
-    if (realtimeUnbinders.length > 0) return
-    const wsClient = getWSClient()
+  function bindWSClient(client?: WSClient): void {
+    const wsClient = client ?? getWSClient()
+    if (boundWSClient === wsClient && realtimeUnbinders.length > 0) return
+    unbindRealtimeListeners()
+    boundWSClient = wsClient
 
     const unbindPresence = wsClient.on('presence.update', (frame) => {
       const data = frame.data
       if (typeof data?.user_id !== 'string') return
-      const online = Boolean(data.online)
-      const lastOnlineAt =
-        typeof data.last_online_at === 'string' ? data.last_online_at : null
-      applyPresenceUpdate(data.user_id, online, lastOnlineAt)
+      applyPresenceUpdate({
+        user_id: data.user_id,
+        online: Boolean(data.online),
+        last_online_at:
+          typeof data.last_online_at === 'string' ? data.last_online_at : null,
+      })
     })
 
     const unbindNotice = wsClient.on('system.notice', (frame) => {
@@ -108,9 +145,14 @@ export const useContactStore = defineStore('contact', () => {
     realtimeUnbinders.push(unbindPresence, unbindNotice)
   }
 
-  function unbindRealtimeListeners() {
+  function bindRealtimeListeners(client?: WSClient): void {
+    bindWSClient(client)
+  }
+
+  function unbindRealtimeListeners(): void {
     realtimeUnbinders.forEach((fn) => fn())
     realtimeUnbinders = []
+    boundWSClient = null
   }
 
   async function fetchFriends(reset = true): Promise<void> {
@@ -289,6 +331,8 @@ export const useContactStore = defineStore('contact', () => {
     pendingReceivedCount,
     friendIdsSet,
     findFriend,
+    applyPresenceUpdate,
+    bindWSClient,
     bindRealtimeListeners,
     unbindRealtimeListeners,
     fetchFriends,

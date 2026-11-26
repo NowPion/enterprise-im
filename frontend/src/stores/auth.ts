@@ -14,7 +14,12 @@ import {
 import type { ChangePasswordPayload, LogoutScope, RegisterPayload, Tokens } from '@/types/auth'
 import { BIZ_CODE } from '@/types/common'
 import type { SelfUser, UpdateMePayload } from '@/types/user'
-import { WSClient } from '@/utils/wsClient'
+import {
+  createSharedWSClient,
+  getSharedWSClient,
+  resetSharedWSClient,
+  type WSClient,
+} from '@/utils/wsClient'
 
 export type WSConnectionState = 'disconnected' | 'connecting' | 'connected'
 
@@ -24,18 +29,17 @@ export function setAuthRedirectHandler(handler: (reason?: string) => void): void
   navigateToLoginHandler = handler
 }
 
-let sharedWSClient: WSClient | null = null
 let activeAccessToken = ''
 let activeUserId: string | null = null
 
 export function getWSClient(): WSClient {
-  if (!sharedWSClient) {
-    sharedWSClient = new WSClient({
+  return (
+    getSharedWSClient() ??
+    createSharedWSClient({
       getAccessToken: () => activeAccessToken || getStoredTokens()?.access_token || '',
       getAccountId: () => activeUserId,
     })
-  }
-  return sharedWSClient
+  )
 }
 
 export const useAuthStore = defineStore('auth', () => {
@@ -48,14 +52,19 @@ export const useAuthStore = defineStore('auth', () => {
   const wsState = ref<WSConnectionState>('disconnected')
 
   activeAccessToken = tokens.value?.access_token ?? ''
+  activeUserId = user.value?.id ?? null
 
-  let wsListenersBound = false
+  let boundWSClient: WSClient | null = null
+  let wsUnsubs: Array<() => void> = []
   let initPromise: Promise<boolean> | null = null
 
   const isAuthenticated = computed(() => Boolean(tokens.value?.access_token && user.value))
   const isAdmin = computed(() => user.value?.role === 'admin')
+  const wsClient = computed(() => getWSClient())
 
-  const wsClient = getWSClient()
+  function getAccessToken(): string {
+    return activeAccessToken || tokens.value?.access_token || getStoredTokens()?.access_token || ''
+  }
 
   function handleSessionTerminated(message: string, redirect = true) {
     clearLocalSession()
@@ -67,45 +76,59 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
-  function bindWSListeners() {
-    if (wsListenersBound) return
-    wsListenersBound = true
+  function unbindWSListeners() {
+    for (const unsub of wsUnsubs) {
+      unsub()
+    }
+    wsUnsubs = []
+    boundWSClient = null
+  }
 
-    wsClient.on('open', () => {
+  function bindWSListeners(client: WSClient = getWSClient()) {
+    if (boundWSClient === client && wsUnsubs.length > 0) return
+    unbindWSListeners()
+    boundWSClient = client
+    if (client.isConnected) {
       wsState.value = 'connected'
-    })
+    }
 
-    wsClient.on('close', () => {
-      wsState.value = 'disconnected'
-    })
+    wsUnsubs = [
+      client.on('open', () => {
+        wsState.value = 'connected'
+      }),
 
-    wsClient.on('error', (err) => {
-      if (err.kind === 'frame') {
-        const code = err.frame.data?.code
-        if (code === BIZ_CODE.WS_AUTH_FAILED && tokens.value?.refresh_token) {
+      client.on('close', () => {
+        wsState.value = 'disconnected'
+      }),
+
+      client.on('error', (err) => {
+        if (err.kind === 'frame') {
+          const code = err.frame.data?.code
+          if (code === BIZ_CODE.WS_AUTH_FAILED && tokens.value?.refresh_token) {
+            void refreshTokensSingleFlight(tokens.value.access_token).catch(() => {
+              // Expiry redirect handled inside refreshTokensSingleFlight callback
+            })
+          } else if (code === BIZ_CODE.WS_SESSION_REVOKED) {
+            handleSessionTerminated('当前会话已被下线或禁用，请重新登录')
+          }
+        } else if (err.kind === 'protocol' && tokens.value?.refresh_token) {
           void refreshTokensSingleFlight(tokens.value.access_token).catch(() => {
             // Expiry redirect handled inside refreshTokensSingleFlight callback
           })
-        } else if (code === BIZ_CODE.WS_SESSION_REVOKED) {
-          handleSessionTerminated('当前会话已被下线或禁用，请重新登录')
         }
-      } else if (err.kind === 'protocol' && tokens.value?.refresh_token) {
-        void refreshTokensSingleFlight(tokens.value.access_token).catch(() => {
-          // Expiry redirect handled inside refreshTokensSingleFlight callback
-        })
-      }
-    })
+      }),
 
-    wsClient.on('system.notice', (frame) => {
-      const event = frame.data?.event
-      if (event === 'session.revoked') {
-        handleSessionTerminated('您的会话已被注销，请重新登录')
-      } else if (event === 'account.kicked') {
-        handleSessionTerminated('您的账号已被强制下线，请重新登录')
-      } else if (event === 'account.disabled') {
-        handleSessionTerminated('您的账号已被禁用，请联系管理员')
-      }
-    })
+      client.on('system.notice', (frame) => {
+        const event = frame.data?.event
+        if (event === 'session.revoked') {
+          handleSessionTerminated('您的会话已被注销，请重新登录')
+        } else if (event === 'account.kicked') {
+          handleSessionTerminated('您的账号已被强制下线，请重新登录')
+        } else if (event === 'account.disabled') {
+          handleSessionTerminated('您的账号已被禁用，请联系管理员')
+        }
+      }),
+    ]
   }
 
   setAuthLifecycleCallbacks({
@@ -128,15 +151,21 @@ export const useAuthStore = defineStore('auth', () => {
     if (!tokens.value?.access_token || !user.value) return
     activeAccessToken = tokens.value.access_token
     activeUserId = user.value.id
-    bindWSListeners()
+    const client = getWSClient()
+    bindWSListeners(client)
+    if (client.isConnected) {
+      wsState.value = 'connected'
+      return
+    }
     if (wsState.value === 'disconnected') {
       wsState.value = 'connecting'
     }
-    wsClient.connect()
+    client.connect()
   }
 
   function disconnectWS() {
-    wsClient.disconnect()
+    unbindWSListeners()
+    resetSharedWSClient()
     wsState.value = 'disconnected'
   }
 
@@ -232,6 +261,7 @@ export const useAuthStore = defineStore('auth', () => {
   async function fetchMe(): Promise<SelfUser> {
     const res = await userApi.getMe()
     user.value = res.user
+    activeUserId = res.user.id
     sessionId.value = res.session_id || sessionId.value
     deviceId.value = res.device_id || deviceId.value
     return res.user
@@ -276,6 +306,7 @@ export const useAuthStore = defineStore('auth', () => {
     loading,
     wsState,
     wsClient,
+    getAccessToken,
     isAuthenticated,
     isAdmin,
     initAuth,
