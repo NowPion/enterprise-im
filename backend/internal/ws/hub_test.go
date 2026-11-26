@@ -263,3 +263,37 @@ func TestLiveReconnectAfterLastLeaseExpiryDeliversOfflineThenOnlineToFriend(t *t
 		}
 	}
 }
+
+func TestDeliverToUsersEnqueuesFramesAndDeduplicatesTargets(t *testing.T) {
+	var hub Hub
+	c1 := newClient(context.Background(), nil)
+	c2 := newClient(context.Background(), nil)
+	c3 := newClient(context.Background(), nil)
+	c1.lease = repository.ConnLease{UserID: 101, ConnID: "c1"}
+	c2.lease = repository.ConnLease{UserID: 101, ConnID: "c2"}
+	c3.lease = repository.ConnLease{UserID: 102, ConnID: "c3"}
+	hub.peers.add(101, "c1", c1)
+	hub.peers.add(101, "c2", c2)
+	hub.peers.add(102, "c3", c3)
+
+	payload := map[string]any{"event": "group.member_added", "group_id": "1"}
+	if err := hub.DeliverToUsers(context.Background(), []uint64{0, 101, 101, 102}, "system.notice", payload); err != nil {
+		t.Fatalf("DeliverToUsers failed: %v", err)
+	}
+
+	for name, ch := range map[string]<-chan frame{"c1": c1.send, "c2": c2.send, "c3": c3.send} {
+		select {
+		case msg := <-ch:
+			if msg.Type != "system.notice" {
+				t.Fatalf("%s expected system.notice, got %q", name, msg.Type)
+			}
+		default:
+			t.Fatalf("%s did not receive delivered frame", name)
+		}
+		select {
+		case extra := <-ch:
+			t.Fatalf("%s received duplicate frame: %+v", name, extra)
+		default:
+		}
+	}
+}

@@ -181,6 +181,8 @@ func buildRouter(
 	userSvc := service.NewUserService(userRepo, userPresenceRepo, log)
 	friendReqSvc := service.NewFriendRequestService(friendReqRepo, friendRepo, seqAllocator, frPresence, idGen, log)
 	friendSvc := service.NewFriendService(friendRepo, log)
+	groupRepo := repository.NewGormGroupRepository(db)
+	groupSvc := service.NewGroupService(groupRepo, seqAllocator, frPresence, idGen, hub, log)
 
 	router := api.NewRouterWithStage4(cfg, log, healthCtrl, api.Stage4Dependencies{
 		JWTAuth:           jwtAuth,
@@ -189,6 +191,7 @@ func buildRouter(
 		FriendRequestCtrl: controller.NewFriendRequestController(friendReqSvc),
 		FriendController:  controller.NewFriendController(friendSvc),
 	})
+	api.RegisterGroupRoutes(router, jwtAuth, controller.NewGroupController(groupSvc))
 	api.RegisterWSRoute(router, cfg, hub)
 	return &serverRouter{Engine: router, hub: hub}, nil
 }
