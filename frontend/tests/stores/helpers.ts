@@ -253,7 +253,109 @@ export function findAction(store: unknown, candidates: string[]): ((...args: nev
   return null
 }
 
-export function bindStoreWS(store: unknown, client: WSClient): boolean {
+export function installInMemoryXhr(
+  responder: (
+    method: string,
+    url: string,
+    body: unknown,
+    headers: Record<string, string>,
+  ) => { status?: number; body: unknown },
+) {
+  const PreviousXhr = globalThis.XMLHttpRequest
+  const calls: Array<{
+    method: string
+    url: string
+    body: unknown
+    headers: Record<string, string>
+  }> = []
+
+  class FakeXMLHttpRequest {
+    readyState = 0
+    timeout = 0
+    status = 0
+    statusText = ''
+    responseText = ''
+    response: unknown = ''
+    responseURL = ''
+    onloadend: ((event: Event) => void) | null = null
+    onreadystatechange: ((event: Event) => void) | null = null
+    onerror: ((event: Event) => void) | null = null
+    onabort: ((event: Event) => void) | null = null
+    ontimeout: ((event: Event) => void) | null = null
+    upload = {
+      addEventListener() {},
+      removeEventListener() {},
+    }
+
+    private method = 'GET'
+    private url = ''
+    private requestHeaders: Record<string, string> = {}
+
+    open(method: string, url: string) {
+      this.method = method.toUpperCase()
+      this.url = url.replace(/^https?:\/\/[^/]+/, '')
+      this.responseURL = url
+      this.readyState = 1
+    }
+
+    setRequestHeader(name: string, value: string) {
+      this.requestHeaders[name.toLowerCase()] = value
+    }
+
+    getAllResponseHeaders() {
+      return 'content-type: application/json\r\nx-request-id: req-test-1\r\n'
+    }
+
+    addEventListener() {}
+    removeEventListener() {}
+    abort() {}
+
+    send(rawBody?: unknown) {
+      let parsedBody: unknown = rawBody
+      if (typeof parsedBody === 'string') {
+        try {
+          parsedBody = JSON.parse(parsedBody)
+        } catch {
+          // keep raw string
+        }
+      }
+      const headersSnapshot = { ...this.requestHeaders }
+      calls.push({
+        method: this.method,
+        url: this.url,
+        body: parsedBody,
+        headers: headersSnapshot,
+      })
+
+      setTimeout(() => {
+        const result = responder(this.method, this.url, parsedBody, headersSnapshot)
+        const status = result.status ?? 200
+        this.status = status
+        this.statusText = status >= 400 ? 'Error' : 'OK'
+        const serialized = typeof result.body === 'string' ? result.body : JSON.stringify(result.body)
+        this.responseText = serialized
+        this.response = serialized
+        this.readyState = 4
+        this.onloadend?.(new Event('loadend'))
+      }, 5)
+    }
+  }
+
+  globalThis.XMLHttpRequest = FakeXMLHttpRequest as unknown as typeof XMLHttpRequest
+
+  return {
+    calls,
+    restore() {
+      globalThis.XMLHttpRequest = PreviousXhr
+    },
+  }
+}
+
+export function bindStoreWS(
+  store: unknown,
+  client: WSClient,
+  getCurrentUserId?: () => string,
+): boolean {
   const fn = findAction(store, [
     'bindWS',
     'bindWs',
@@ -269,7 +371,11 @@ export function bindStoreWS(store: unknown, client: WSClient): boolean {
     'setWsClient',
   ])
   if (!fn) return false
-  ;(fn as (c: WSClient) => unknown)(client)
+  if (getCurrentUserId) {
+    ;(fn as (c: WSClient, getUid?: () => string) => unknown)(client, getCurrentUserId)
+  } else {
+    ;(fn as (c: WSClient) => unknown)(client)
+  }
   return true
 }
 

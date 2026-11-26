@@ -40,6 +40,8 @@ if (!hasAuthAndContactStores) {
   extraExcludes.push('tests/stores/authAndContact.spec.ts')
 }
 
+const baseTestExclude = [...configDefaults.exclude, ...extraExcludes]
+
 export default defineConfig({
   resolve: {
     alias: {
@@ -47,9 +49,31 @@ export default defineConfig({
     },
   },
   test: {
-    environment: 'node',
     globals: true,
-    ...(hasJsdom ? { environmentMatchGlobs: [['tests/stores/**', 'jsdom']] } : {}),
-    exclude: [...configDefaults.exclude, ...extraExcludes],
+    exclude: baseTestExclude,
+    projects: [
+      {
+        extends: true,
+        test: {
+          name: 'node',
+          environment: 'node',
+          include: ['tests/**/*.spec.ts'],
+          exclude: [...baseTestExclude, 'tests/stores/**'],
+        },
+      },
+      ...(hasJsdom
+        ? [
+            {
+              extends: true as const,
+              test: {
+                name: 'stores',
+                environment: 'jsdom',
+                include: ['tests/stores/**/*.spec.ts'],
+                exclude: baseTestExclude,
+              },
+            },
+          ]
+        : []),
+    ],
   },
 })
