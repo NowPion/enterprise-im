@@ -51,8 +51,10 @@ local function publish(devicesOnline)
     redis.call('PUBLISH', channel, cjson.encode({user_id=user, device_count=devicesOnline, at=now}))
 end
 
+local offlineAt = 0
 if op == 'open' and not owner[1] and count == 1 and previous then
-    redis.call('ZADD', KEYS[7], now, user)
+    publish(0)
+    offlineAt = now
     previous = false
 end
 if count == 0 then
@@ -64,4 +66,4 @@ if previous ~= state and (count > 0 or previous) then
     publish(distinct)
     if count == 0 then return now end
 end
-return 0
+return offlineAt

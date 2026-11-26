@@ -7,6 +7,12 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
+
+	"enterprise-im/backend/internal/config"
+	"enterprise-im/backend/internal/model"
+	"enterprise-im/backend/internal/repository"
 )
 
 func TestDelayedRotationOnlyClosesMatchingTokenAndSession(t *testing.T) {
@@ -97,5 +103,163 @@ func TestRegistryConcurrentJoinDeliverKickAndLeave(t *testing.T) {
 	workers.Wait()
 	if len(peers.all()) != 0 {
 		t.Fatal("registry retained disconnected clients")
+	}
+}
+
+type presenceFrameExpectation struct {
+	online      bool
+	deviceCount int
+}
+
+func readFriendPresenceFrame(t *testing.T, ch <-chan frame, targetUserID string) presenceFrameExpectation {
+	t.Helper()
+	timer := time.NewTimer(3 * time.Second)
+	defer timer.Stop()
+	for {
+		select {
+		case msg := <-ch:
+			if msg.Type != "presence.update" {
+				continue
+			}
+			payload, ok := msg.Data.(map[string]any)
+			if !ok || payload["user_id"] != targetUserID {
+				continue
+			}
+			online, _ := payload["online"].(bool)
+			count, _ := payload["device_count"].(int)
+			lastOnline, hasLastOnline := payload["last_online_at"].(*time.Time)
+			if !online && (!hasLastOnline || lastOnline == nil) {
+				t.Fatalf("offline presence.update missing last_online_at: %+v", payload)
+			}
+			if online && lastOnline != nil {
+				t.Fatalf("online presence.update must have nil last_online_at: %+v", payload)
+			}
+			return presenceFrameExpectation{online: online, deviceCount: count}
+		case <-timer.C:
+			t.Fatalf("timed out waiting for presence.update frame for user %s", targetUserID)
+		}
+	}
+}
+
+func TestLiveReconnectAfterLastLeaseExpiryDeliversOfflineThenOnlineToFriend(t *testing.T) {
+	cfg, err := config.Load("../../configs/config.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if (cfg.MySQL.Password == "" || cfg.Redis.Password == "") && os.Getenv("IM_RUN_LIVE_TESTS") == "" {
+		t.Skip("MySQL and Redis credentials not supplied")
+	}
+	db, err := repository.NewMySQL(cfg.MySQL, nil)
+	if err != nil {
+		t.Fatal("connecting to live MySQL failed")
+	}
+	defer repository.CloseMySQL(db)
+	rdb, err := repository.NewRedis(cfg.Redis)
+	if err != nil {
+		t.Fatal("connecting to live Redis failed")
+	}
+	defer rdb.Close()
+
+	ctx := context.Background()
+	target := model.User{Username: "ws-target-" + uuid.NewString(), Nickname: "target", PasswordHash: uuid.NewString()}
+	friend := model.User{Username: "ws-friend-" + uuid.NewString(), Nickname: "friend", PasswordHash: uuid.NewString()}
+	if err := db.Create(&target).Error; err != nil {
+		t.Fatal(err)
+	}
+	defer db.Delete(&target)
+	if err := db.Create(&friend).Error; err != nil {
+		t.Fatal(err)
+	}
+	defer db.Delete(&friend)
+
+	pair := []model.Friendship{
+		{UserID: target.ID, FriendID: friend.ID, Status: model.FriendshipStatusActive},
+		{UserID: friend.ID, FriendID: target.ID, Status: model.FriendshipStatusActive},
+	}
+	if err := db.Create(&pair).Error; err != nil {
+		t.Fatal(err)
+	}
+	defer db.Where("(user_id = ? AND friend_id = ?) OR (user_id = ? AND friend_id = ?)", target.ID, friend.ID, friend.ID, target.ID).Delete(&model.Friendship{})
+
+	friendStore := repository.NewPresenceRepository(db, rdb, 10*time.Second)
+	targetStore := repository.NewPresenceRepository(db, rdb, 250*time.Millisecond)
+
+	nodeID := "ws-m1-node-" + uuid.NewString()
+	cfgCopy := *cfg
+	cfgCopy.App.NodeID = nodeID
+	hub := NewHub(&cfgCopy, nil, friendStore, nil)
+
+	sub, err := friendStore.Subscribe(ctx, nodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer sub.Close()
+		hub.listen(runCtx, sub)
+	}()
+	defer func() {
+		cancel()
+		<-done
+	}()
+
+	friendClient := newClient(ctx, nil)
+	friendClient.lease = repository.ConnLease{
+		UserID:    friend.ID,
+		SessionID: friend.ID + 100,
+		DeviceID:  "web",
+		NodeID:    nodeID,
+		ConnID:    uuid.NewString(),
+	}
+	hub.peers.add(friend.ID, friendClient.lease.ConnID, friendClient)
+	defer hub.peers.remove(friend.ID, friendClient.lease.ConnID, friendClient)
+	if err := friendStore.Open(ctx, friendClient.lease); err != nil {
+		t.Fatal(err)
+	}
+	targetUID := strconv.FormatUint(target.ID, 10)
+	friendUID := strconv.FormatUint(friend.ID, 10)
+	defer rdb.Del(ctx, "im:presence:user:"+targetUID, "im:presence:user:"+friendUID)
+	defer friendStore.Release(ctx, friendClient.lease)
+
+	lease1 := repository.ConnLease{UserID: target.ID, SessionID: target.ID + 200, DeviceID: "web", NodeID: nodeID, ConnID: uuid.NewString()}
+	lease2 := repository.ConnLease{UserID: target.ID, SessionID: target.ID + 201, DeviceID: "desktop", NodeID: nodeID, ConnID: uuid.NewString()}
+	defer targetStore.Release(ctx, lease1)
+	defer targetStore.Release(ctx, lease2)
+
+	if err := targetStore.Open(ctx, lease1); err != nil {
+		t.Fatal(err)
+	}
+	if got := readFriendPresenceFrame(t, friendClient.send, targetUID); !got.online || got.deviceCount != 1 {
+		t.Fatalf("expected initial friend notification online=true device_count=1, got %+v", got)
+	}
+
+	// Allow lease1 to expire naturally before ReapExpired runs, then reconnect with lease2.
+	time.Sleep(320 * time.Millisecond)
+	if err := targetStore.Open(ctx, lease2); err != nil {
+		t.Fatal(err)
+	}
+	if got := readFriendPresenceFrame(t, friendClient.send, targetUID); got.online || got.deviceCount != 0 {
+		t.Fatalf("expected friend notification online=false device_count=0 before reconnect online, got %+v", got)
+	}
+	if got := readFriendPresenceFrame(t, friendClient.send, targetUID); !got.online || got.deviceCount != 1 {
+		t.Fatalf("expected friend notification online=true device_count=1 after offline, got %+v", got)
+	}
+
+	if err := targetStore.ReapExpired(ctx); err != nil {
+		t.Fatal(err)
+	}
+	timer := time.NewTimer(120 * time.Millisecond)
+	defer timer.Stop()
+	for {
+		select {
+		case extra := <-friendClient.send:
+			if payload, ok := extra.Data.(map[string]any); ok && extra.Type == "presence.update" && payload["user_id"] == targetUID {
+				t.Fatalf("unexpected duplicate presence notification after reap: %+v", payload)
+			}
+		case <-timer.C:
+			return
+		}
 	}
 }

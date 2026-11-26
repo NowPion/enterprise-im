@@ -42,6 +42,13 @@ func (hub *Hub) Authenticate(ctx context.Context, token string) (middleware.Auth
 	return hub.auth.Authenticate(check, token)
 }
 
+func (hub *Hub) LogHandshakeDenied(ctx context.Context, reqID string, userID uint64, failure *errcode.Error) {
+	if hub == nil || hub.log == nil || failure == nil {
+		return
+	}
+	hub.log.WarnContext(ctx, "ws_handshake_denied", "request_id", reqID, "user_id", userID, "code", failure.Code)
+}
+
 func (hub *Hub) admit(client *Client) bool {
 	hub.gate.RLock()
 	defer hub.gate.RUnlock()

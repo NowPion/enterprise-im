@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"strconv"
@@ -147,4 +148,163 @@ func TestLiveConnectionLeaseOwnershipAndTTL(t *testing.T) {
 	if rdb.Get(ctx, userKey).Val() != "1" || rdb.SCard(ctx, routeKey).Val() != 1 || !rdb.SIsMember(ctx, sessKey, "A:"+second.ConnID).Val() {
 		t.Fatal("stale tab changed surviving leases")
 	}
+}
+
+type presencePubSubEvent struct {
+	UserID      string `json:"user_id"`
+	DeviceCount int    `json:"device_count"`
+	At          int64  `json:"at"`
+}
+
+func readPresencePubSubForUser(t *testing.T, ch <-chan *redis.Message, uid string) presencePubSubEvent {
+	t.Helper()
+	timer := time.NewTimer(2 * time.Second)
+	defer timer.Stop()
+	for {
+		select {
+		case msg, ok := <-ch:
+			if !ok {
+				t.Fatal("presence pubsub channel closed unexpectedly")
+			}
+			var event presencePubSubEvent
+			if err := json.Unmarshal([]byte(msg.Payload), &event); err == nil && event.UserID == uid {
+				return event
+			}
+		case <-timer.C:
+			t.Fatalf("timed out waiting for presence event for user %s", uid)
+		}
+	}
+}
+
+func assertNoPresencePubSubForUser(t *testing.T, ch <-chan *redis.Message, uid string, wait time.Duration) {
+	t.Helper()
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	for {
+		select {
+		case msg, ok := <-ch:
+			if !ok {
+				return
+			}
+			var event presencePubSubEvent
+			if err := json.Unmarshal([]byte(msg.Payload), &event); err == nil && event.UserID == uid {
+				t.Fatalf("unexpected extra presence event for user %s: %+v", uid, event)
+			}
+		case <-timer.C:
+			return
+		}
+	}
+}
+
+func TestLiveReconnectAfterLastLeaseExpiryPublishesOfflineThenOnline(t *testing.T) {
+	cfg, err := config.Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if (cfg.MySQL.Password == "" || cfg.Redis.Password == "") && os.Getenv("IM_RUN_LIVE_TESTS") == "" {
+		t.Skip("MySQL and Redis credentials not supplied")
+	}
+	db, err := NewMySQL(cfg.MySQL, nil)
+	if err != nil {
+		t.Fatal("connecting to live MySQL failed")
+	}
+	defer CloseMySQL(db)
+	rdb, err := NewRedis(cfg.Redis)
+	if err != nil {
+		t.Fatal("connecting to live Redis failed")
+	}
+	defer rdb.Close()
+
+	ctx := context.Background()
+	user := model.User{Username: "ws-m1-" + uuid.NewString(), Nickname: "m1 test", PasswordHash: uuid.NewString()}
+	if err := db.Create(&user).Error; err != nil {
+		t.Fatal(err)
+	}
+	defer db.Delete(&user)
+
+	uid := strconv.FormatUint(user.ID, 10)
+	store := NewPresenceRepository(db, rdb, 250*time.Millisecond)
+	sub, err := store.Subscribe(ctx, "m1-node-"+uuid.NewString())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sub.Close()
+	ch := sub.Channel()
+
+	lease1 := ConnLease{UserID: user.ID, SessionID: user.ID + 1, DeviceID: "web", NodeID: "m1-node", ConnID: uuid.NewString()}
+	lease2 := ConnLease{UserID: user.ID, SessionID: user.ID + 2, DeviceID: "desktop", NodeID: "m1-node", ConnID: uuid.NewString()}
+	lease3 := ConnLease{UserID: user.ID, SessionID: user.ID + 3, DeviceID: "mobile", NodeID: "m1-node", ConnID: uuid.NewString()}
+	lease4 := ConnLease{UserID: user.ID, SessionID: user.ID + 4, DeviceID: "web", NodeID: "m1-node", ConnID: uuid.NewString()}
+
+	defer func() {
+		for _, lease := range []ConnLease{lease1, lease2, lease3, lease4} {
+			_, _ = store.change(ctx, "close", lease)
+		}
+		rdb.Del(ctx, "im:presence:user:"+uid, "im:route:user:"+uid)
+		rdb.HDel(ctx, "im:presence:active", uid)
+		rdb.ZRem(ctx, offlinePendingKey, uid)
+	}()
+
+	// 1. Open first connection and let its lease naturally expire without running ReapExpired.
+	if err := store.Open(ctx, lease1); err != nil {
+		t.Fatal(err)
+	}
+	if ev := readPresencePubSubForUser(t, ch, uid); ev.DeviceCount != 1 {
+		t.Fatalf("expected initial online event with device_count=1, got %+v", ev)
+	}
+	time.Sleep(320 * time.Millisecond)
+
+	// 2. Reconnect before ReapExpired runs: must emit offline(0) then online(1), not two consecutive online events.
+	if err := store.Open(ctx, lease2); err != nil {
+		t.Fatal(err)
+	}
+	if ev := readPresencePubSubForUser(t, ch, uid); ev.DeviceCount != 0 {
+		t.Fatalf("expected missed offline transition device_count=0 before reconnect online, got %+v", ev)
+	}
+	if ev := readPresencePubSubForUser(t, ch, uid); ev.DeviceCount != 1 {
+		t.Fatalf("expected reconnect online event device_count=1 after offline, got %+v", ev)
+	}
+	var refreshed model.User
+	if err := db.First(&refreshed, user.ID).Error; err != nil || refreshed.LastOnlineAt == nil {
+		t.Fatalf("expected last_online_at persisted after expired-lease reconnect, err=%v user=%+v", err, refreshed)
+	}
+
+	// 3. Delayed ReapExpired must clean lease1 route/deadline without emitting any extra presence event.
+	if err := store.ReapExpired(ctx); err != nil {
+		t.Fatal(err)
+	}
+	assertNoPresencePubSubForUser(t, ch, uid, 100*time.Millisecond)
+	if got := rdb.Get(ctx, "im:presence:user:"+uid).Val(); got != "1" {
+		t.Fatalf("expected active connection count 1 after reap, got %q", got)
+	}
+	if got := rdb.SCard(ctx, "im:route:user:"+uid).Val(); got != 1 || !rdb.SIsMember(ctx, "im:route:user:"+uid, "m1-node:"+lease2.ConnID).Val() {
+		t.Fatalf("expected only lease2 route remaining after reap, card=%d", got)
+	}
+	if err := rdb.ZScore(ctx, offlinePendingKey, uid).Err(); !errors.Is(err, redis.Nil) {
+		t.Fatalf("expected offline pending key acknowledged, got %v", err)
+	}
+
+	// 4. Control: opening another device while lease2 is alive must emit device_count=2 without offline.
+	if err := store.Open(ctx, lease3); err != nil {
+		t.Fatal(err)
+	}
+	if ev := readPresencePubSubForUser(t, ch, uid); ev.DeviceCount != 2 {
+		t.Fatalf("expected online device_count=2 when adding live device, got %+v", ev)
+	}
+
+	// 5. Let both live devices naturally expire before ReapExpired, then reconnect with lease4.
+	time.Sleep(320 * time.Millisecond)
+	if err := store.Open(ctx, lease4); err != nil {
+		t.Fatal(err)
+	}
+	if ev := readPresencePubSubForUser(t, ch, uid); ev.DeviceCount != 0 {
+		t.Fatalf("expected offline device_count=0 after all leases expired, got %+v", ev)
+	}
+	if ev := readPresencePubSubForUser(t, ch, uid); ev.DeviceCount != 1 {
+		t.Fatalf("expected online device_count=1 after offline, got %+v", ev)
+	}
+	if err := store.ReapExpired(ctx); err != nil {
+		t.Fatal(err)
+	}
+	assertNoPresencePubSubForUser(t, ch, uid, 100*time.Millisecond)
 }
