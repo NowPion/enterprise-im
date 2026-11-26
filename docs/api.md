@@ -33,7 +33,7 @@ REST 管理账号、好友、会话、文件与群。发送消息使用 WebSocke
 | `Conversation` | `id, type, peer, group_id, title, avatar_url, last_msg_id, last_seq, last_msg_preview, last_msg_at, last_delivered_seq, last_read_seq, unread_count, is_pinned, is_muted, is_visible, can_send`。single 填对端 User，group 填 group_id，另一项为 null。末消息字段描述全会话，两个水位和偏好属于当前用户。 |
 | `Group / GroupMember` | 群含 `id, conversation_id, name, avatar_url, announcement, owner_id, status, member_count, max_members`，status 取 active 或 disbanded。成员含 `user_id, nickname, avatar_url, nickname_in_group, role, online, joined_at`，群角色取 owner、admin、member。 |
 | `Message` | `msg_id, client_msg_id, conversation_id, seq, sender_id, msg_type, content, extra, status, created_at, recalled_at`。普通行 status 为 normal，撤回后的原行为 recalled，recalled_at 为服务端时间。单聊中发送者的历史消息另带 `delivery_status`，可取 sent、delivered、read。群按成员水位查询回执。 |
-| `Asset` | `asset_id, purpose, url, filename, mime, size_bytes`。图片与头像另含 `width, height, thumbnail_url`，语音另含 `duration_ms`。url 是同源受权资源路径，size_bytes 表示原件字节数。 |
+| `Asset` | `asset_id, purpose, url, filename, mime, size_bytes`。图片与头像另含 `width, height, thumbnail_url`，语音另含 `duration_ms`。`url` 为同源受权资源路径（`/api/v1/uploads/{asset_id}/download` 或经后端鉴权反代的 `/uploads/...` 路径），`size_bytes` 表示原件字节数。 |
 
 ## REST 接口
 
@@ -77,15 +77,16 @@ Axios 收到 Access 过期错误时，同一设备共享一次刷新（含使用
 | GET | `/api/v1/conversations` | 用户 | 分页，可选 include_hidden | Conversation 页，包含对端或群摘要、本人水位和偏好 |
 | GET | `/api/v1/conversations/{conversation_id}` | 会话成员 | 无 | 完整 Conversation、本人角色、对端或群资料 |
 | PATCH | `/api/v1/conversations/{conversation_id}/settings` | 会话成员 | 任意 is_pinned、is_muted、is_visible | 当前用户的会话设置 |
-| GET | `/api/v1/conversations/{conversation_id}/members` | 会话成员 | 分页 | 成员 User、群角色、群昵称、online |
+| GET | `/api/v1/conversations/{conversation_id}/members` | 会话成员 | 分页 | 页项含 `user, role, nickname_in_group, online, joined_at, last_delivered_seq, last_read_seq` |
 | GET | `/api/v1/conversations/{conversation_id}/messages` | 会话成员 | before_seq 或 after_seq 二选一、limit | Message 页。before 按 seq 倒查后以升序返回 |
 | GET | `/api/v1/conversations/{conversation_id}/sync` | 会话成员 | after_seq、limit | `{items, from_seq, to_seq, has_more}`，只取 seq > after_seq |
-| POST | `/api/v1/conversations/{conversation_id}/messages` | 会话成员 | client_msg_id、msg_type、content、extra | 与 WS msg.ack 相同的 Message，状态为 sent |
+| POST | `/api/v1/conversations/{conversation_id}/messages` | 会话成员 | client_msg_id、msg_type、content、extra | `{message: Message}`，返回完整 `Message` 对象（其中 `status="normal"`、`delivery_status="sent"`；幂等重试返回原 `msg_id`、`seq` 与当前最新 `status`/`delivery_status`） |
 | POST | `/api/v1/conversations/{conversation_id}/messages/{msg_id}/recall` | 原发送者 | 无 | 更新后的原 Message、recall Message |
+| GET | `/api/v1/conversations/{conversation_id}/messages/{msg_id}/receipts` | 会话成员 | 可选 `status=read\|unread\|delivered\|pending`、分页 | `{msg_id, conversation_id, seq, total_members, delivered_count, read_count, unread_count, items}`；每项含 `user, role, delivery_status, last_delivered_seq, last_read_seq, delivered_at, read_at` |
 | POST | `/api/v1/conversations/{conversation_id}/read` | 会话成员 | last_read_seq | last_read_seq、unread_count=0、read_at |
 | POST | `/api/v1/conversations/{conversation_id}/delivered` | 会话成员 | last_delivered_seq | 更新后的送达水位，供离线补偿使用 |
 
-会话列表从本人 conversation_members 联表取得，单聊按 direct_key 唯一，群按 group_id 唯一。服务端用 IN 批量装配对端、群资料和在线状态，不在循环中查询。消息历史使用 `(conversation_id, seq)` 索引，禁止 OFFSET 深分页。`before_seq` 查询 `seq < before_seq`，`after_seq` 和 sync 查询 `seq > after_seq`。服务端拒绝超过会话当前末 seq 的水位，重复或较小水位只返回当前值。
+会话列表从本人 conversation_members 联表取得，单聊按 direct_key 唯一，群按 group_id 唯一。服务端用 IN 批量装配对端、群资料和在线状态，不在循环中查询。消息历史使用 `(conversation_id, seq)` 索引，禁止 OFFSET 深分页。`before_seq` 查询 `seq < before_seq`，`after_seq` 和 sync 查询 `seq > after_seq`。服务端拒绝超过会话当前末 seq 的水位，重复或较小水位只返回当前值。群聊回执明细接口依据 `conversation_members` 的 `last_delivered_seq` / `last_read_seq` 水位线统计并分页返回已读/未读成员，单聊则结合 `message_receipts` 返回逐条时间与状态。
 
 HTTP 消息发送和 WS `msg.send` 共用 `(sender_id, client_msg_id)` 唯一约束。重试必须使用原 client_msg_id，服务端返回已有 msg_id、seq 和当前 delivery_status，不产生第二条消息。撤回只允许发送者在配置的时间窗内执行。`extra` 只接受与 msg_type 匹配的已上传资产引用。
 
@@ -98,7 +99,7 @@ HTTP 消息发送和 WS `msg.send` 共用 `(sender_id, client_msg_id)` 唯一约
 | GET | `/api/v1/uploads/{asset_id}/download` | 资产所有者或消息成员 | 无 | 二进制文件，Content-Disposition 使用清洗后的文件名 |
 | DELETE | `/api/v1/uploads/{asset_id}` | 资产所有者 | 无 | `{asset_id, deleted}`。已被消息引用时拒绝删除 |
 
-上传写入临时文件后检查真实 MIME、内容、大小、像素、音频时长和路径规则，再原子移动到 `uploads/` 卷。图片生成缩略图，语音保存 duration_ms。只有消息、头像或群资料引用资产后才允许相关资源读取，下载不泄露本地路径。删除资产不会删除已提交消息。
+上传写入临时文件后检查真实 MIME、内容、大小、像素、音频时长和路径规则，再原子移动到 `uploads/` 卷。图片生成缩略图，语音保存 duration_ms。资产元数据与引用关系由服务端持久记录（第二阶段建表设计时在核心十表之外按需扩充 `assets` 支撑表）；只有消息、头像或群资料引用资产后才允许读取，`/api/v1/uploads/{asset_id}/download` 为受权附件统一下载入口，`/uploads/...` 仅用于经 Nginx/后端鉴权反代的受权静态媒体输出，下载不泄露本地磁盘路径。删除资产不会删除已提交消息。
 
 ### 群聊管理
 
@@ -124,9 +125,9 @@ HTTP 消息发送和 WS `msg.send` 共用 `(sender_id, client_msg_id)` 唯一约
 
 | 方法 | 路径 | 鉴权 | 请求 | 成功 data |
 | --- | --- | --- | --- | --- |
-| GET | `/api/v1/admin/users` | 平台管理员 | q、status、role、分页 | User 页，含 session_count、online |
+| GET | `/api/v1/admin/users` | 平台管理员 | q、status（1 或 0）、role、分页 | User 页，含 session_count、online |
 | GET | `/api/v1/admin/users/{user_id}` | 平台管理员 | 无 | 用户详情、设备会话、好友/群计数和审计摘要 |
-| PATCH | `/api/v1/admin/users/{user_id}/status` | 平台管理员 | status=active\|disabled、reason | 用户状态、revoked_session_count、kicked_connection_count |
+| PATCH | `/api/v1/admin/users/{user_id}/status` | 平台管理员 | `status=1\|0`（`1` 启用、`0` 禁用）、reason | 用户状态（`1` 或 `0`）、revoked_session_count、kicked_connection_count |
 | POST | `/api/v1/admin/users/{user_id}/kick` | 平台管理员 | 可选 session_id、reason | 撤销 session 数和关闭连接数 |
 | GET | `/api/v1/admin/groups` | 平台管理员 | q、status、分页 | 群摘要页，含 owner、member_count、last_seq |
 | GET | `/api/v1/admin/groups/{group_id}` | 平台管理员 | 无 | 群详情、成员页和系统事件摘要 |
@@ -136,7 +137,13 @@ HTTP 消息发送和 WS `msg.send` 共用 `(sender_id, client_msg_id)` 唯一约
 | GET | `/api/v1/admin/metrics/streams` | 平台管理员 | 无 | stream、group、consumer、last_delivered_id、pending_count、oldest_pending_age |
 | GET | `/api/v1/admin/health/dependencies` | 平台管理员 | 无 | MySQL/Redis 状态、延迟、版本和最近错误时间 |
 
-后台接口统一产生不可变审计事件。禁用用户在事务内写 users.status、撤销全部 user_sessions 并写 Token 黑名单，提交后通过 `system.notice` 的 account.disabled 事件关闭所有连接。启用只恢复登录资格。后台审计按会话、发送者、关键词和时间范围分页，超过允许范围返回业务错误。
+后台接口统一产生不可变审计事件（经由业务事务与 `im:stream:events` / `im-event-audit` 消费组落库；第二阶段将在核心十表之外按需扩充 `audit_logs` 支撑表）。禁用用户在事务内写 `users.status=0`、撤销全部 `user_sessions` 并写 Token 黑名单，提交后通过 `im:route:session:{session_id}` 集合关闭对应会话下全部标签页连接并下发 `system.notice` 的 `account.disabled` 事件。启用（`users.status=1`）只恢复登录资格。后台审计按会话、发送者、关键词和时间范围分页，超过允许范围返回业务错误。
+
+### 系统健康检查（免鉴权）
+
+| 方法 | 路径 | 鉴权 | 请求 | 成功 data |
+| --- | --- | --- | --- | --- |
+| GET | `/healthz` | 公开（免鉴权，供 Docker `healthcheck` 与探针调用） | 无 | `{status: "ok", mysql: "ok", redis: "ok", timestamp}`；MySQL 或 Redis 探活失败时返回 HTTP 503 与业务错误码 `19001` / `19002` |
 
 ## HTTP 错误处理
 
@@ -164,18 +171,18 @@ HTTP 消息发送和 WS `msg.send` 共用 `(sender_id, client_msg_id)` 唯一约
 | type | 方向 | data 示例 | 处理契约 |
 | --- | --- | --- | --- |
 | `msg.send` | 客户端 → 服务端 | `{"conversation_id":"90001","client_msg_id":"01J8K3Y6G2N8B6QWZ8Y9Q5A4C1","msg_type":"text","content":"hello","extra":{}}` | 客户端先将消息置为 `sending`。服务端校验成员、内容和附件，按 `(sender_id, client_msg_id)` 去重，分配 Snowflake `msg_id` 和会话 `seq`，事务提交后回 `msg.ack`。 |
-| `msg.ack` | 服务端 → 发送端 | `{"client_msg_id":"01J8K3Y6G2N8B6QWZ8Y9Q5A4C1","msg_id":"188900000000001","conversation_id":"90001","seq":"42","status":"sent","delivery_status":"sent"}` | 只表示消息已经写入 MySQL。重发同一 client_msg_id 必须返回同一 msg_id、seq 和当前状态。 |
-| `msg.push` | 服务端 → 会话成员端 | `{"message":{"msg_id":"188900000000001","conversation_id":"90001","seq":"42","sender_id":"10001","client_msg_id":"01J8K3Y6G2N8B6QWZ8Y9Q5A4C1","msg_type":"text","content":"hello","extra":{},"status":"normal"},"delivery_status":"sent"}` | 由 `im:stream:messages` Consumer Group 投递到在线端，或由 `/sync` 增量补偿。接收端写入本地 Store 后回送送达 ACK。也可携带发送端收到的 delivered/read 水位变化。 |
+| `msg.ack` | 服务端 → 发送端 | `{"client_msg_id":"01J8K3Y6G2N8B6QWZ8Y9Q5A4C1","msg_id":"188900000000001","conversation_id":"90001","seq":"42","status":"normal","delivery_status":"sent"}` | 只表示消息已经写入 MySQL。`status` 恒为 `Message.status`（`normal` 或 `recalled`），`delivery_status` 表示四阶段进度（`sent`、`delivered` 或 `read`）。重发同一 client_msg_id 必须返回同一 msg_id、seq 与当前最新 `status`/`delivery_status`。 |
+| `msg.push` | 服务端 → 会话成员端 / 发送端 | 新消息：`{"push_type":"message","message":{"msg_id":"188900000000001","conversation_id":"90001","seq":"42","sender_id":"10001","client_msg_id":"01J8K3Y6G2N8B6QWZ8Y9Q5A4C1","msg_type":"text","content":"hello","extra":{},"status":"normal","created_at":"2026-11-26T04:00:00.123Z","recalled_at":null},"delivery_status":"sent"}`；回执/水位：`{"push_type":"receipt","conversation_id":"90001","user_id":"10002","delivery_status":"read","msg_id":null,"seq":null,"last_delivered_seq":"42","last_read_seq":"42","updated_at":"2026-11-26T04:00:05.000Z"}` | `push_type=message` 由 `im:stream:messages` 投递完整 `Message`（含 `created_at`、`recalled_at`）到在线端，接收端写入本地 Store 后回送 `msg.delivered_ack`。`push_type=receipt` 由 `im:stream:events` 推送回执/水位变更给发送端：单条 `delivered_ack` 可附带 `msg_id` 与 `seq`，会话级 `read_ack` 触发时 `msg_id`/`seq` 为 `null`，按 `last_delivered_seq`/`last_read_seq` 批量推进本地状态。 |
 | `msg.delivered_ack` | 接收端 → 服务端 | `{"msg_id":"188900000000001","conversation_id":"90001","seq":"42"}` | 仅允许该消息的会话成员推进自己的送达回执。服务端单调推进 `last_delivered_seq`，并由 `im:stream:events` 通知发送端。 |
 | `msg.read_ack` | 接收端 → 服务端 | `{"conversation_id":"90001","last_read_seq":"42"}` | 仅允许成员把本人的已读水位向前推进。服务端批量更新范围内回执、清零未读并广播已读事件。 |
-| `msg.recall` | 客户端 → 服务端，随后服务端广播 | `{"conversation_id":"90001","msg_id":"188900000000001"}` | 只允许原发送者在撤回窗口内操作。事务中更新原消息为 recalled，追加有独立 seq 的 recall/system 记录，再经 events stream 广播。 |
-| `presence.update` | 服务端 → 订阅端 | `{"user_id":"10002","online":true,"device_count":2,"last_online_at":null}` | 好友或群成员的合并在线状态。只有所有 session 租约失效后才发 offline，客户端不能根据单个连接关闭自行判定。 |
-| `ping` | 客户端 → 服务端 | `{"nonce":"p_01J8K3Y6","last_seq":{"90001":"42"}}` | 刷新 WS 连接租约和 `im:presence:*` TTL。`last_seq` 仅作为补偿提示，不改变业务状态。 |
+| `msg.recall` | 客户端 → 服务端，随后回发操作端 | 入站：`{"conversation_id":"90001","msg_id":"188900000000001"}`；响应：`{"conversation_id":"90001","recalled_msg_id":"188900000000001","recall_msg_id":"188900000000002","seq":"43","recalled_at":"2026-11-26T04:01:00.000Z"}` | 只允许原发送者在撤回窗口内操作。事务中更新原消息为 `recalled` 并追加新 `seq` 的 `recall` 消息记录，提交后回发 `msg.recall` 响应；随后经 `im:stream:messages` 向在线成员推送该 `recall` 记录（`msg.push`），并经 `im:stream:events` 广播 `system.notice(event="message.recalled")` 触发各端就地更新原消息。 |
+| `presence.update` | 服务端 → 订阅端 | `{"user_id":"10002","online":true,"device_count":2,"last_online_at":null}` | 好友或群成员的合并在线状态。只有该用户所有活跃连接的 `im:presence:conn:{conn_id}` 租约失效且活跃连接数归零后才发 offline，客户端不能根据单个连接关闭自行判定。 |
+| `ping` | 客户端 → 服务端 | `{"nonce":"p_01J8K3Y6","last_seq":{"90001":"42"}}` | 刷新当前连接的 `im:presence:conn:{conn_id}`、`im:presence:user:{user_id}` 及路由集合 TTL。`last_seq` 仅作为补偿提示，不改变业务状态。 |
 | `pong` | 服务端 → 客户端 | `{"nonce":"p_01J8K3Y6","server_time":1795687200123,"session_expires_at":"2026-11-26T12:00:00Z"}` | 确认心跳并返回服务端时间和当前 session 到期时间。 |
 | `error` | 双向 | `{"code":18005,"message":"conversation access denied","retryable":false,"related_type":"msg.send","related_req_id":"req_01J8K3Y6"}` | 单帧失败响应。错误不会改变业务状态，`related_req_id` 指出失败请求。鉴权或策略失败可以随后发送关闭通知并关闭连接。 |
-| `system.notice` | 服务端 → 用户或会话成员 | `{"event":"friend.requested","notice_id":"n_01J8K3Y6","conversation_id":null,"actor_id":"10002","target_user_id":"10001","payload":{"request_id":"70001","message":"hello"}}` | 第 11 类系统通知。覆盖好友申请与处理、群成员变更、撤回说明、会话吊销、账号禁用、被踢和停服。payload 只引用 REST 资源或系统消息，不伪造正文。 |
+| `system.notice` | 服务端 → 用户或会话成员 | `{"event":"friend.requested","notice_id":"n_01J8K3Y6","conversation_id":null,"actor_id":"10002","target_user_id":"10001","payload":{"request_id":"70001","message":"hello"}}` | 第 11 类系统通知。覆盖好友申请与处理、群成员变更、撤回通知（`message.recalled`）、会话吊销（`session.revoked`）、账号禁用、被踢和停服。payload 只引用 REST 资源或系统消息，不伪造正文。 |
 
-`system.notice.event` 至少包括 `friend.requested`、`friend.accepted`、`friend.rejected`、`group.member_added`、`group.member_removed`、`group.role_changed`、`group.disbanded`、`message.recalled`、`session.revoked`、`account.kicked`、`account.disabled` 和 `server.draining`。`msg.push` 的 `delivery_status` 可为 `sent`、`delivered` 或 `read`，收到 `msg.ack` 绝不等同于送达。
+`system.notice.event` 至少包括 `friend.requested`、`friend.accepted`、`friend.rejected`、`group.member_added`、`group.member_removed`、`group.role_changed`、`group.disbanded`、`message.recalled`、`session.revoked`、`account.kicked`、`account.disabled` 和 `server.draining`。其中 `message.recalled` 仅作实时就地折叠通知（`payload` 含 `recalled_msg_id`、`recall_msg_id`、`recall_seq`、`recalled_at`），持久顺序历史以 `msg.push(push_type="message")` 与 `/sync` 返回的 `recall` 记录为准。`msg.push` 的 `delivery_status` 可为 `sent`、`delivered` 或 `read`，收到 `msg.ack` 绝不等同于送达。
 
 ### 状态迁移、断线与 Stream
 
@@ -185,7 +192,7 @@ HTTP 消息发送和 WS `msg.send` 共用 `(sender_id, client_msg_id)` 唯一约
 2. 事务提交后 `XADD im:stream:messages`。在线成员通过 Consumer Group 得到 `msg.push`，离线成员用 `/api/v1/conversations/{conversation_id}/sync?after_seq=...` 补齐。接收端持久化本地消息后发 `msg.delivered_ack`，服务端推进 `delivered` 并经 `im:stream:events` 通知发送端。
 3. 接收端打开会话时发 `msg.read_ack`，也可调用已定义的 HTTP read 接口。服务端只接受不超过会话末 seq 的单调水位，批量更新 receipts、`last_read_seq` 和 `unread_count=0`，再经 events stream 通知发送端，进入 `read`。
 4. ACK、Stream 消费和 Hub 投递都必须幂等。重复 ACK 不回退水位，Stream 重投不增加未读。断线重连先用原 client_msg_id 重发未获 ack 的请求，再按各会话 last_seq 增量补偿，最后恢复实时订阅。
-5. Redis 去重缓存是快速路径，MySQL `(sender_id, client_msg_id)` 和 `(conversation_id, seq)` 唯一约束是最终事实。`im:dedupe:*`、`im:token:blacklist:*`、presence/session route keys、`im:stream:messages`、`im:stream:events`、Consumer Group、`XACK` 和 `XAUTOCLAIM` 的 TTL、命名与 Pending 补偿语义以 architecture.md 为准。
+5. Redis 去重缓存是快速路径，MySQL `(sender_id, client_msg_id)` 和 `(conversation_id, seq)` 唯一约束是最终事实。`im:dedupe:*`、`im:token:blacklist:*`、`im:presence:user:*`、`im:presence:conn:*`、`im:route:user:*`、`im:route:session:*`（Set，支持多标签页共享 `session_id`）、`im:stream:messages`、`im:stream:events`、Consumer Group、`XACK` 和 `XAUTOCLAIM` 的 TTL、命名与 Pending 补偿语义以 architecture.md 为准。
 
 服务端 close code 使用 1000 表示正常停机，1008 表示策略或鉴权失败，1011 表示内部失败。单连接有界发送队列满时关闭慢端，客户端按 last_seq 补偿，不能阻塞其他连接。
 
@@ -219,7 +226,7 @@ HTTP 消息发送和 WS `msg.send` 共用 `(sender_id, client_msg_id)` 唯一约
 | 12008 | 404 | 好友关系不存在 |
 | 13001 | 404 | 会话不存在 |
 | 13002 | 403 | 不是会话成员 |
-| 13003 | 409 | 会话已隐藏或已解散 |
+| 13003 | 409 | 会话已隐藏或已解散（仅阻断发送等写入操作，不影响原成员按会话 ID 补拉历史与已读同步） |
 | 13004 | 400 | seq 游标格式错误 |
 | 13005 | 409 | delivered/read 水位不能回退 |
 | 13006 | 400 | 水位超过会话当前最大 seq |
