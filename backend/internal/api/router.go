@@ -49,7 +49,15 @@ func NewRouter(cfg *config.Config, log *slog.Logger, healthCtrl *controller.Heal
 	r.Use(middleware.AccessLogger(log))
 	r.Use(middleware.Recovery(log))
 	r.Use(middleware.CORS(allowedOrigins))
-	r.Use(middleware.MaxBodySize(maxBodyBytes))
+	defaultBodyLimit := middleware.MaxBodySize(maxBodyBytes)
+	r.Use(func(c *gin.Context) {
+		if c.Request != nil && c.Request.Method == http.MethodPost &&
+			(c.Request.URL.Path == "/api/v1/uploads" || c.Request.URL.Path == "/api/v1/me/avatar") {
+			c.Next()
+			return
+		}
+		defaultBodyLimit(c)
+	})
 
 	r.NoRoute(func(c *gin.Context) {
 		errcode.FailWithStatus(c, http.StatusNotFound, errcode.ErrInvalidValue.WithMessage("endpoint not found"), nil)
