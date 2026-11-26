@@ -21,6 +21,7 @@ import (
 	"enterprise-im/backend/internal/config"
 	"enterprise-im/backend/internal/controller"
 	"enterprise-im/backend/internal/middleware"
+	"enterprise-im/backend/internal/mq"
 	pkgjwt "enterprise-im/backend/internal/pkg/jwt"
 	"enterprise-im/backend/internal/pkg/logger"
 	"enterprise-im/backend/internal/pkg/snowflake"
@@ -108,6 +109,15 @@ func run(configPath string) error {
 		_ = repository.CloseMySQL(db)
 		return fmt.Errorf("start websocket hub: %w", err)
 	}
+	if err := router.mqManager.Start(context.Background()); err != nil {
+		drainCtx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownTimeout)
+		_ = router.hub.Shutdown(drainCtx)
+		cancel()
+		_ = ln.Close()
+		_ = repository.CloseRedis(rdb)
+		_ = repository.CloseMySQL(db)
+		return fmt.Errorf("start mq consumers: %w", err)
+	}
 
 	srv := &http.Server{
 		Addr:         ln.Addr().String(),
@@ -119,12 +129,9 @@ func run(configPath string) error {
 
 	hooks := ShutdownHooks{
 		NotifyAndCloseWS: router.hub.Shutdown,
-		DrainMQ: func(context.Context) error {
-			log.Info("shutdown_mq_hook_noop", slog.String("reason", "no active mq consumers"))
-			return nil
-		},
-		CloseDB:    func() error { return repository.CloseMySQL(db) },
-		CloseRedis: func() error { return repository.CloseRedis(rdb) },
+		DrainMQ:          router.mqManager.Drain,
+		CloseDB:          func() error { return repository.CloseMySQL(db) },
+		CloseRedis:       func() error { return repository.CloseRedis(rdb) },
 	}
 
 	sigCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -135,7 +142,9 @@ func run(configPath string) error {
 
 type serverRouter struct {
 	*gin.Engine
-	hub *ws.Hub
+	hub        *ws.Hub
+	mqProducer *mq.StreamProducer
+	mqManager  *mq.ConsumerManager
 }
 
 func buildRouter(
@@ -196,6 +205,9 @@ func buildRouter(
 	groupRepo := repository.NewGormGroupRepository(db)
 	groupSvc := service.NewGroupService(groupRepo, seqAllocator, frPresence, idGen, hub, log)
 
+	mqProducer := mq.NewProducer(rdb, cfg.MQ, log)
+	mqManager := mq.NewConsumerManager(cfg.MQ, cfg.App.NodeID, rdb, db, hub, log)
+
 	router := api.NewRouterWithStage4(cfg, log, healthCtrl, api.Stage4Dependencies{
 		JWTAuth:           jwtAuth,
 		AuthController:    controller.NewAuthController(authSvc),
@@ -211,7 +223,12 @@ func buildRouter(
 	})
 	api.RegisterGroupRoutes(router, jwtAuth, controller.NewGroupController(groupSvc))
 	api.RegisterWSRoute(router, cfg, hub)
-	return &serverRouter{Engine: router, hub: hub}, nil
+	return &serverRouter{
+		Engine:     router,
+		hub:        hub,
+		mqProducer: mqProducer,
+		mqManager:  mqManager,
+	}, nil
 }
 
 func newLoggedNoopSessionRevokeHook(log *slog.Logger) service.SessionRevokeHook {

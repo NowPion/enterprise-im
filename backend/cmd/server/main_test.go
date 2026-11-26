@@ -295,6 +295,9 @@ func TestBuildRouterMountsHealthzAndAllStage4Routes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildRouter failed: %v", err)
 	}
+	if router.mqProducer == nil || router.mqManager == nil {
+		t.Fatal("expected buildRouter to initialize mqProducer and mqManager")
+	}
 
 	registered := make(map[string]bool)
 	for _, rt := range router.Routes() {

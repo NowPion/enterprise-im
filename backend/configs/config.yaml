@@ -82,3 +82,19 @@ upload:
 
 chat:
   recall_window: 2m
+
+mq:
+  stream_max_len: 100000
+  stream_retention: 168h # 7 days
+  trim_interval: 5m
+  read_count: 100
+  block_timeout: 2s
+  reclaim_interval: 30s
+  reclaim_min_idle: 30s
+  max_retries: 5
+  max_pending_age: 15m
+  dead_stream_max_len: 50000
+  pending_reclaim_ttl: 24h
+  idempotency_ttl: 24h
+  worker_count: 1
+  large_group_receipt_threshold: 100
