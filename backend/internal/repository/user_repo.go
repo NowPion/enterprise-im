@@ -143,10 +143,6 @@ func (r *UserRepository) UpdateProfile(ctx context.Context, userID uint64, updat
 // Search queries active users by exact or literal prefix match on username or nickname,
 // ordered by id DESC with keyset pagination.
 func (r *UserRepository) Search(ctx context.Context, params UserSearchParams) ([]model.User, error) {
-	if r == nil || r.db == nil {
-		return nil, errors.New("mysql db handle is nil")
-	}
-
 	var column string
 	switch params.Field {
 	case UserSearchFieldUsername:
@@ -155,6 +151,14 @@ func (r *UserRepository) Search(ctx context.Context, params UserSearchParams) ([
 		column = "nickname"
 	default:
 		return nil, fmt.Errorf("%w: %q", ErrInvalidSearchField, params.Field)
+	}
+
+	if params.Match != UserSearchMatchExact && params.Match != UserSearchMatchPrefix {
+		return nil, fmt.Errorf("%w: %q", ErrInvalidSearchMatch, params.Match)
+	}
+
+	if r == nil || r.db == nil {
+		return nil, errors.New("mysql db handle is nil")
 	}
 
 	q := r.db.WithContext(ctx).
@@ -167,8 +171,6 @@ func (r *UserRepository) Search(ctx context.Context, params UserSearchParams) ([
 		q = q.Where(column+" = ?", params.Query)
 	case UserSearchMatchPrefix:
 		q = q.Where(column+" LIKE ? ESCAPE '!'", EscapeLikeLiteral(params.Query)+"%")
-	default:
-		return nil, fmt.Errorf("%w: %q", ErrInvalidSearchMatch, params.Match)
 	}
 
 	if params.Cursor > 0 {

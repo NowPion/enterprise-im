@@ -47,6 +47,12 @@ func TestEscapeLikeLiteralAndGuards(t *testing.T) {
 	if _, err := nilRepo.Search(context.Background(), UserSearchParams{Query: "a", Field: UserSearchFieldUsername, Match: UserSearchMatchExact, Limit: 10}); err == nil {
 		t.Fatal("expected Search on nil db to fail")
 	}
+	if _, err := nilRepo.Search(context.Background(), UserSearchParams{Query: "a", Field: "invalid", Match: UserSearchMatchExact, Limit: 10}); !errors.Is(err, ErrInvalidSearchField) {
+		t.Fatalf("expected ErrInvalidSearchField, got %v", err)
+	}
+	if _, err := nilRepo.Search(context.Background(), UserSearchParams{Query: "a", Field: UserSearchFieldUsername, Match: "invalid", Limit: 10}); !errors.Is(err, ErrInvalidSearchMatch) {
+		t.Fatalf("expected ErrInvalidSearchMatch, got %v", err)
+	}
 
 	nilPresence := NewUserPresenceRepository(nil)
 	if _, err := nilPresence.GetUsersOnline(context.Background(), []uint64{1}); err == nil {
