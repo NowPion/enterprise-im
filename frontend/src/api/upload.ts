@@ -1,5 +1,5 @@
-import request from '@/api/request'
-import { normalizeApiError, unwrapApiResponse } from '@/api/conversation'
+import request, { apiDelete, apiGet, apiPost } from '@/api/request'
+import { ApiError } from '@/types/common'
 import type { Asset, DeleteAssetResult, UploadPurpose } from '@/types/upload'
 
 export interface UploadAssetOptions {
@@ -7,7 +7,12 @@ export interface UploadAssetOptions {
   onProgress?: (percent: number) => void
 }
 
-export async function uploadAsset(
+export interface AssetRequestTarget {
+  url: string
+  useApiBase: boolean
+}
+
+export function uploadAsset(
   file: File | Blob,
   purpose: UploadPurpose,
   options: UploadAssetOptions = {},
@@ -20,72 +25,73 @@ export async function uploadAsset(
     formData.append('file', file, options.filename ?? 'upload.bin')
   }
 
-  try {
-    const res = await request.post('/uploads', formData, {
-      headers: { 'Content-Type': 'multipart/form-data' },
-      onUploadProgress: (evt) => {
-        if (!options.onProgress || !evt.total || evt.total <= 0) return
-        const percent = Math.min(100, Math.round((evt.loaded * 100) / evt.total))
-        options.onProgress(percent)
-      },
-    })
-    return unwrapApiResponse<Asset>(res)
-  } catch (err) {
-    throw normalizeApiError(err)
-  }
+  return apiPost<Asset>('/uploads', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    onUploadProgress: (evt) => {
+      if (!options.onProgress || !evt.total || evt.total <= 0) return
+      const percent = Math.min(100, Math.round((evt.loaded * 100) / evt.total))
+      options.onProgress(percent)
+    },
+  })
 }
 
-export async function fetchAssetMeta(assetId: string): Promise<Asset> {
-  try {
-    const res = await request.get(`/uploads/${encodeURIComponent(assetId)}`)
-    return unwrapApiResponse<Asset>(res)
-  } catch (err) {
-    throw normalizeApiError(err)
-  }
+export function fetchAssetMeta(assetId: string): Promise<Asset> {
+  return apiGet<Asset>(`/uploads/${encodeURIComponent(assetId)}`)
 }
 
-export async function deleteAsset(assetId: string): Promise<DeleteAssetResult> {
-  try {
-    const res = await request.delete(`/uploads/${encodeURIComponent(assetId)}`)
-    return unwrapApiResponse<DeleteAssetResult>(res)
-  } catch (err) {
-    throw normalizeApiError(err)
+export function deleteAsset(assetId: string): Promise<DeleteAssetResult> {
+  return apiDelete<DeleteAssetResult>(`/uploads/${encodeURIComponent(assetId)}`)
+}
+
+/**
+ * Resolves asset paths per docs/api.md:
+ * - `/api/v1/...` or bare `asset_id` -> `/uploads/...` relative to `request` (`/api/v1`)
+ * - root `/uploads/...` -> `/uploads/...` against site root (`baseURL: ''`)
+ */
+export function resolveAssetRequestTarget(urlOrAssetId: string): AssetRequestTarget {
+  const trimmed = urlOrAssetId.trim()
+  if (trimmed.startsWith('/api/v1/')) {
+    return {
+      url: trimmed.slice('/api/v1'.length),
+      useApiBase: true,
+    }
+  }
+  if (trimmed.startsWith('/uploads/')) {
+    return {
+      url: trimmed,
+      useApiBase: false,
+    }
+  }
+  return {
+    url: `/uploads/${encodeURIComponent(trimmed)}/download`,
+    useApiBase: true,
   }
 }
 
 export function normalizeAssetRequestPath(urlOrAssetId: string): string {
-  const trimmed = urlOrAssetId.trim()
-  if (trimmed.startsWith('/api/v1/')) {
-    return trimmed.slice('/api/v1'.length)
-  }
-  if (trimmed.startsWith('/uploads/')) {
-    return trimmed
-  }
-  return `/uploads/${encodeURIComponent(trimmed)}/download`
+  return resolveAssetRequestTarget(urlOrAssetId).url
 }
 
 export async function fetchAssetBlob(
   urlOrAssetId: string,
   options: { variant?: 'thumbnail'; download?: boolean } = {},
 ): Promise<Blob> {
-  const path = normalizeAssetRequestPath(urlOrAssetId)
+  const target = resolveAssetRequestTarget(urlOrAssetId)
   const params: Record<string, string> = {}
   if (options.variant) params.variant = options.variant
   if (options.download) params.download = '1'
 
-  try {
-    const res = await request.get(path, {
-      params: Object.keys(params).length > 0 ? params : undefined,
-      responseType: 'blob',
-    })
-    if (res instanceof Blob) {
-      return res
-    }
-    if (typeof res === 'object' && res !== null && 'data' in res && (res as { data: unknown }).data instanceof Blob) {
-      return (res as { data: Blob }).data
-    }
-    throw new Error('下载响应格式异常')
-  } catch (err) {
-    throw normalizeApiError(err)
+  const res = await request.get<Blob>(target.url, {
+    baseURL: target.useApiBase ? undefined : '',
+    params: Object.keys(params).length > 0 ? params : undefined,
+    responseType: 'blob',
+  })
+  const raw = res as unknown
+  if (raw instanceof Blob) {
+    return raw
   }
+  if (typeof raw === 'object' && raw !== null && 'data' in raw && (raw as { data: unknown }).data instanceof Blob) {
+    return (raw as { data: Blob }).data
+  }
+  throw new ApiError(-1, '下载响应格式异常')
 }
