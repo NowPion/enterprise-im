@@ -137,7 +137,7 @@ func newStage5Rig(t *testing.T, live bool, heartbeat time.Duration) *stage5Rig {
 	return rig
 }
 
-func (rig *stage5Rig) dial(t *testing.T, token string, bearer bool, nextWrite <-chan chan struct{}) *websocket.Conn {
+func (rig *stage5Rig) dialAttempt(t *testing.T, token string, bearer bool, nextWrite <-chan chan struct{}) (*websocket.Conn, *http.Response, error) {
 	t.Helper()
 	dialer := websocket.Dialer{HandshakeTimeout: stage5IO, NetDialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 		server, client := net.Pipe()
@@ -158,7 +158,12 @@ func (rig *stage5Rig) dial(t *testing.T, token string, bearer bool, nextWrite <-
 	} else if token != "" {
 		address += "?access_token=" + url.QueryEscape(token)
 	}
-	conn, response, err := dialer.DialContext(t.Context(), address, header)
+	return dialer.DialContext(t.Context(), address, header)
+}
+
+func (rig *stage5Rig) dial(t *testing.T, token string, bearer bool, nextWrite <-chan chan struct{}) *websocket.Conn {
+	t.Helper()
+	conn, response, err := rig.dialAttempt(t, token, bearer, nextWrite)
 	if err != nil {
 		if response != nil {
 			_ = response.Body.Close()
@@ -166,8 +171,31 @@ func (rig *stage5Rig) dial(t *testing.T, token string, bearer bool, nextWrite <-
 		}
 		t.Fatal("/ws did not complete the WebSocket handshake")
 	}
+	if response == nil || response.StatusCode != http.StatusSwitchingProtocols {
+		_ = conn.Close()
+		t.Fatalf("/ws upgrade did not return HTTP 101: %v", response)
+	}
 	t.Cleanup(func() { _ = conn.Close() })
 	return conn
+}
+
+func (rig *stage5Rig) dialDenied(t *testing.T, token string, bearer bool) (*http.Response, []byte) {
+	t.Helper()
+	conn, response, err := rig.dialAttempt(t, token, bearer, nil)
+	if conn != nil {
+		_ = conn.Close()
+		t.Fatal("/ws unexpectedly upgraded to WebSocket")
+	}
+	if !errors.Is(err, websocket.ErrBadHandshake) || response == nil {
+		if response != nil {
+			_ = response.Body.Close()
+		}
+		t.Fatalf("/ws handshake error=%v, want pre-upgrade HTTP rejection", err)
+	}
+	body, readErr := io.ReadAll(response.Body)
+	_ = response.Body.Close()
+	stage5Check(t, readErr)
+	return response, body
 }
 
 type stage5Frame struct {
