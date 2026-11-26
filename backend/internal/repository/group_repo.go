@@ -386,20 +386,8 @@ func (r *GormGroupRepository) ListUserGroups(ctx context.Context, filter UserGro
 		MyRole       string    `gorm:"column:my_role"`
 	}
 
-	q := r.db.WithContext(ctx).
-		Table("groups AS g").
-		Select("g.id, g.name, g.avatar_url, g.owner_id, g.announcement, g.max_members, g.status, g.created_at, g.updated_at, gm.role AS my_role").
-		Joins("INNER JOIN group_members AS gm ON gm.group_id = g.id AND gm.user_id = ?", filter.UserID)
-
-	if filter.Status != "" {
-		q = q.Where("g.status = ?", filter.Status)
-	}
-	if filter.CursorID > 0 {
-		q = q.Where("g.id < ?", filter.CursorID)
-	}
-
 	var rows []joinedRow
-	if err := q.Order("g.id DESC").Limit(filter.Limit + 1).Find(&rows).Error; err != nil {
+	if err := r.buildListUserGroupsQuery(ctx, filter).Find(&rows).Error; err != nil {
 		return nil, false, err
 	}
 
@@ -469,6 +457,21 @@ func (r *GormGroupRepository) ListUserGroups(ctx context.Context, filter UserGro
 		})
 	}
 	return out, hasMore, nil
+}
+
+func (r *GormGroupRepository) buildListUserGroupsQuery(ctx context.Context, filter UserGroupListFilter) *gorm.DB {
+	q := r.db.WithContext(ctx).
+		Table("`groups` AS g").
+		Select("g.id, g.name, g.avatar_url, g.owner_id, g.announcement, g.max_members, g.status, g.created_at, g.updated_at, gm.role AS my_role").
+		Joins("INNER JOIN `group_members` AS gm ON gm.group_id = g.id AND gm.user_id = ?", filter.UserID)
+
+	if filter.Status != "" {
+		q = q.Where("g.status = ?", filter.Status)
+	}
+	if filter.CursorID > 0 {
+		q = q.Where("g.id < ?", filter.CursorID)
+	}
+	return q.Order("g.id DESC").Limit(filter.Limit + 1)
 }
 
 // ListGroupMembers returns group_members rows ordered by id DESC up to filter.Limit.
