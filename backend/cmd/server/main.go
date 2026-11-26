@@ -168,6 +168,8 @@ func buildRouter(
 	userPresenceRepo := repository.NewUserPresenceRepository(rdb)
 	friendRepo := repository.NewFriendshipRepository(db, rdb)
 	friendReqRepo := repository.NewGormFriendRequestRepository(db)
+	convRepo := repository.NewConversationRepository(db)
+	msgRepo := repository.NewMessageRepository(db, rdb)
 	seqAllocator := repository.NewRedisSeqAllocator(rdb, 5*time.Second)
 	frPresence := repository.NewRedisPresenceChecker(rdb)
 
@@ -181,6 +183,9 @@ func buildRouter(
 	userSvc := service.NewUserService(userRepo, userPresenceRepo, log)
 	friendReqSvc := service.NewFriendRequestService(friendReqRepo, friendRepo, seqAllocator, frPresence, idGen, log)
 	friendSvc := service.NewFriendService(friendRepo, log)
+	convSvc := service.NewConversationService(convRepo, friendRepo, log)
+	msgSvc := service.NewMessageService(convRepo, msgRepo, seqAllocator, idGen, hub, cfg.Chat.RecallWindow, log)
+	hub.SetChatService(msgSvc)
 
 	router := api.NewRouterWithStage4(cfg, log, healthCtrl, api.Stage4Dependencies{
 		JWTAuth:           jwtAuth,
@@ -188,6 +193,11 @@ func buildRouter(
 		UserController:    controller.NewUserController(userSvc),
 		FriendRequestCtrl: controller.NewFriendRequestController(friendReqSvc),
 		FriendController:  controller.NewFriendController(friendSvc),
+	})
+	api.RegisterStage6ChatRoutes(router, api.Stage6ChatDependencies{
+		JWTAuth:                jwtAuth,
+		ConversationController: controller.NewConversationController(convSvc),
+		MessageController:      controller.NewMessageController(msgSvc),
 	})
 	api.RegisterWSRoute(router, cfg, hub)
 	return &serverRouter{Engine: router, hub: hub}, nil

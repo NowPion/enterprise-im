@@ -14,7 +14,14 @@ import (
 	"enterprise-im/backend/internal/middleware"
 	"enterprise-im/backend/internal/pkg/errcode"
 	"enterprise-im/backend/internal/repository"
+	"enterprise-im/backend/internal/service"
 )
+
+// ChatService handles real-time message send and recall operations from WebSocket connections.
+type ChatService interface {
+	SendMessage(ctx context.Context, input service.SendMessageInput, beforePush func(res *service.SendMessageResult)) (*service.SendMessageResult, *errcode.Error)
+	RecallMessage(ctx context.Context, userID uint64, convID uint64, msgID uint64, beforePush func(res *service.RecallMessageResult)) (*service.RecallMessageResult, *errcode.Error)
+}
 
 type Hub struct {
 	peers       registry
@@ -22,6 +29,7 @@ type Hub struct {
 	node        string
 	auth        *middleware.AccessAuthenticator
 	store       *repository.PresenceRepository
+	chat        ChatService
 	log         *slog.Logger
 	gate        sync.RWMutex
 	draining    bool
@@ -34,6 +42,76 @@ func NewHub(cfg *config.Config, auth *middleware.AccessAuthenticator, store *rep
 		log = slog.Default()
 	}
 	return &Hub{cfg: cfg.WS, node: cfg.App.NodeID, auth: auth, store: store, log: log}
+}
+
+// SetChatService attaches the message service used by ws msg.send and msg.recall handlers.
+func (hub *Hub) SetChatService(chat ChatService) {
+	if hub == nil {
+		return
+	}
+	hub.gate.Lock()
+	hub.chat = chat
+	hub.gate.Unlock()
+}
+
+func (hub *Hub) chatService() ChatService {
+	if hub == nil {
+		return nil
+	}
+	hub.gate.RLock()
+	chat := hub.chat
+	hub.gate.RUnlock()
+	return chat
+}
+
+// BroadcastToUsers delivers a WebSocket frame to all online connections of the target users.
+func (hub *Hub) BroadcastToUsers(ctx context.Context, userIDs []uint64, frameType string, data any) {
+	if hub == nil || len(userIDs) == 0 {
+		return
+	}
+	seen := make(map[uint64]struct{}, len(userIDs))
+	var clients []*Client
+	for _, uid := range userIDs {
+		if uid == 0 {
+			continue
+		}
+		if _, ok := seen[uid]; ok {
+			continue
+		}
+		seen[uid] = struct{}{}
+		clients = append(clients, hub.peers.snapshot(uid)...)
+	}
+	if len(clients) == 0 {
+		return
+	}
+
+	var live map[string]bool
+	if hub.store != nil {
+		leases := make([]repository.ConnLease, 0, len(clients))
+		for _, client := range clients {
+			leases = append(leases, client.lease)
+		}
+		timeout := hub.cfg.WriteTimeout
+		if timeout <= 0 {
+			timeout = 5 * time.Second
+		}
+		checkCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
+		var err error
+		live, err = hub.store.LiveConnections(checkCtx, leases)
+		cancel()
+		if err != nil {
+			hub.log.WarnContext(ctx, "ws_chat_live_connections_failed", "error", err)
+			live = nil
+		}
+	}
+
+	msg := outgoing(frameType, uuid.NewString(), data)
+	for _, client := range clients {
+		if live != nil && !live[client.lease.ConnID] {
+			continue
+		}
+		client.enqueue(msg)
+	}
 }
 
 func (hub *Hub) Authenticate(ctx context.Context, token string) (middleware.AuthContext, *errcode.Error) {
