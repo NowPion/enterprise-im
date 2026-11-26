@@ -23,6 +23,12 @@ type ChatService interface {
 	RecallMessage(ctx context.Context, userID uint64, convID uint64, msgID uint64, beforePush func(res *service.RecallMessageResult)) (*service.RecallMessageResult, *errcode.Error)
 }
 
+// ReceiptService handles real-time delivered and read acknowledgment frames from WebSocket connections.
+type ReceiptService interface {
+	AckDeliveredWS(ctx context.Context, userID, convID, msgID, seq uint64) (*service.AckDeliveredResult, *errcode.Error)
+	AckReadWS(ctx context.Context, userID, convID, lastReadSeq uint64) (*service.MarkReadResult, *errcode.Error)
+}
+
 type Hub struct {
 	peers       registry
 	cfg         config.WSConfig
@@ -30,6 +36,7 @@ type Hub struct {
 	auth        *middleware.AccessAuthenticator
 	store       *repository.PresenceRepository
 	chat        ChatService
+	receipt     ReceiptService
 	log         *slog.Logger
 	gate        sync.RWMutex
 	draining    bool
@@ -62,6 +69,26 @@ func (hub *Hub) chatService() ChatService {
 	chat := hub.chat
 	hub.gate.RUnlock()
 	return chat
+}
+
+// SetReceiptService attaches the receipt service used by ws msg.delivered_ack and msg.read_ack handlers.
+func (hub *Hub) SetReceiptService(receipt ReceiptService) {
+	if hub == nil {
+		return
+	}
+	hub.gate.Lock()
+	hub.receipt = receipt
+	hub.gate.Unlock()
+}
+
+func (hub *Hub) receiptService() ReceiptService {
+	if hub == nil {
+		return nil
+	}
+	hub.gate.RLock()
+	receipt := hub.receipt
+	hub.gate.RUnlock()
+	return receipt
 }
 
 // BroadcastToUsers delivers a WebSocket frame to all online connections of the target users.

@@ -332,6 +332,9 @@ func TestBuildRouterMountsHealthzAndAllStage4Routes(t *testing.T) {
 		"GET /api/v1/conversations/:conversation_id/sync",
 		"POST /api/v1/conversations/:conversation_id/messages",
 		"POST /api/v1/conversations/:conversation_id/messages/:msg_id/recall",
+		"GET /api/v1/conversations/:conversation_id/messages/:msg_id/receipts",
+		"POST /api/v1/conversations/:conversation_id/read",
+		"POST /api/v1/conversations/:conversation_id/delivered",
 		"POST /api/v1/groups",
 		"GET /api/v1/groups",
 		"GET /api/v1/groups/:group_id",
@@ -349,15 +352,6 @@ func TestBuildRouterMountsHealthzAndAllStage4Routes(t *testing.T) {
 	for _, key := range expectedRoutes {
 		if !registered[key] {
 			t.Fatalf("missing expected route %q in router.Routes()", key)
-		}
-	}
-	for _, forbidden := range []string{
-		"POST /api/v1/conversations/:conversation_id/read",
-		"POST /api/v1/conversations/:conversation_id/delivered",
-		"GET /api/v1/conversations/:conversation_id/messages/:msg_id/receipts",
-	} {
-		if registered[forbidden] {
-			t.Fatalf("stage 7 route %q must not be registered in stage 6", forbidden)
 		}
 	}
 
@@ -388,6 +382,9 @@ func TestBuildRouterMountsHealthzAndAllStage4Routes(t *testing.T) {
 		{http.MethodGet, "/api/v1/conversations/1/sync"},
 		{http.MethodPost, "/api/v1/conversations/1/messages"},
 		{http.MethodPost, "/api/v1/conversations/1/messages/1/recall"},
+		{http.MethodGet, "/api/v1/conversations/1/messages/1/receipts"},
+		{http.MethodPost, "/api/v1/conversations/1/read"},
+		{http.MethodPost, "/api/v1/conversations/1/delivered"},
 		{http.MethodPost, "/api/v1/groups"},
 		{http.MethodGet, "/api/v1/groups"},
 		{http.MethodGet, "/api/v1/groups/1"},

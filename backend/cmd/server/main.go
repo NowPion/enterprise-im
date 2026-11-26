@@ -171,6 +171,7 @@ func buildRouter(
 	assetRepo := repository.NewAssetRepository(db)
 	convRepo := repository.NewConversationRepository(db)
 	msgRepo := repository.NewMessageRepository(db, rdb)
+	receiptRepo := repository.NewReceiptRepository(db)
 	seqAllocator := repository.NewRedisSeqAllocator(rdb, 5*time.Second)
 	frPresence := repository.NewRedisPresenceChecker(rdb)
 
@@ -192,7 +193,10 @@ func buildRouter(
 	uploadSvc := service.NewUploadService(assetRepo, userPresenceRepo, uploadStorage, cfg.Upload, authCfg.JWT.Secret, log)
 	convSvc := service.NewConversationService(convRepo, friendRepo, log)
 	msgSvc := service.NewMessageService(convRepo, msgRepo, seqAllocator, idGen, hub, cfg.Chat.RecallWindow, log)
+	// Stage 7 mq.Producer integration will attach the Redis Streams im:stream:events publisher here.
+	receiptSvc := service.NewReceiptService(receiptRepo, friendRepo, nil, log)
 	hub.SetChatService(msgSvc)
+	hub.SetReceiptService(receiptSvc)
 	groupRepo := repository.NewGormGroupRepository(db)
 	groupSvc := service.NewGroupService(groupRepo, seqAllocator, frPresence, idGen, hub, log)
 
@@ -208,6 +212,7 @@ func buildRouter(
 		JWTAuth:                jwtAuth,
 		ConversationController: controller.NewConversationController(convSvc),
 		MessageController:      controller.NewMessageController(msgSvc),
+		ReceiptController:      controller.NewReceiptController(receiptSvc),
 	})
 	api.RegisterGroupRoutes(router, jwtAuth, controller.NewGroupController(groupSvc))
 	api.RegisterWSRoute(router, cfg, hub)
