@@ -10,7 +10,12 @@ import (
 	"enterprise-im/backend/internal/controller"
 	"enterprise-im/backend/internal/middleware"
 	"enterprise-im/backend/internal/pkg/errcode"
+	"enterprise-im/backend/internal/ws"
 )
+
+func RegisterWSRoute(router gin.IRouter, cfg *config.Config, hub *ws.Hub) {
+	router.GET("/ws", wsHandler(cfg, hub))
+}
 
 // Stage4Dependencies holds the shared JWT authentication middleware and Stage 4 controllers.
 type Stage4Dependencies struct {

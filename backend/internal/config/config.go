@@ -22,6 +22,13 @@ type Config struct {
 	Redis     RedisConfig     `mapstructure:"redis"`
 	Snowflake SnowflakeConfig `mapstructure:"snowflake"`
 	Health    HealthConfig    `mapstructure:"health"`
+	WS        WSConfig        `mapstructure:"ws"`
+}
+
+type WSConfig struct {
+	HeartbeatTimeout time.Duration `mapstructure:"heartbeat_timeout"`
+	WriteTimeout     time.Duration `mapstructure:"write_timeout"`
+	MaxFrameBytes    int64         `mapstructure:"max_frame_bytes"`
 }
 
 // AppConfig holds application-level identity and runtime environment settings.
@@ -199,6 +206,9 @@ func (c *Config) Validate() error {
 	if c.Server.MaxBodyBytes <= 0 {
 		return errors.New("server.max_body_bytes must be positive")
 	}
+	if c.WS.HeartbeatTimeout < time.Millisecond || c.WS.WriteTimeout <= 0 || c.WS.MaxFrameBytes <= 0 || c.WS.MaxFrameBytes >= 1<<62 {
+		return errors.New("ws requires a heartbeat_timeout of at least 1ms, positive write_timeout and valid max_frame_bytes")
+	}
 	switch c.Log.Level {
 	case "debug", "info", "warn", "error":
 	default:
@@ -269,6 +279,9 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("server.idle_timeout", "60s")
 	v.SetDefault("server.shutdown_timeout", "15s")
 	v.SetDefault("server.max_body_bytes", 1048576)
+	v.SetDefault("ws.heartbeat_timeout", "75s")
+	v.SetDefault("ws.write_timeout", "5s")
+	v.SetDefault("ws.max_frame_bytes", 1048576)
 
 	v.SetDefault("cors.allowed_origins", []string{"http://localhost:5173", "http://127.0.0.1:5173"})
 
@@ -302,39 +315,42 @@ func setDefaults(v *viper.Viper) {
 
 func bindEnvs(v *viper.Viper) {
 	bindings := map[string][]string{
-		"app.name":                {"IM_APP_NAME", "APP_NAME"},
-		"app.env":                 {"IM_APP_ENV", "APP_ENV"},
-		"app.node_id":             {"IM_APP_NODE_ID", "APP_NODE_ID"},
-		"server.addr":             {"IM_SERVER_ADDR", "SERVER_ADDR"},
-		"server.read_timeout":     {"IM_SERVER_READ_TIMEOUT", "SERVER_READ_TIMEOUT"},
-		"server.write_timeout":    {"IM_SERVER_WRITE_TIMEOUT", "SERVER_WRITE_TIMEOUT"},
-		"server.idle_timeout":     {"IM_SERVER_IDLE_TIMEOUT", "SERVER_IDLE_TIMEOUT"},
-		"server.shutdown_timeout": {"IM_SERVER_SHUTDOWN_TIMEOUT", "SERVER_SHUTDOWN_TIMEOUT"},
-		"server.max_body_bytes":   {"IM_SERVER_MAX_BODY_BYTES", "SERVER_MAX_BODY_BYTES"},
-		"cors.allowed_origins":    {"IM_CORS_ALLOWED_ORIGINS", "CORS_ALLOWED_ORIGINS"},
-		"log.level":               {"IM_LOG_LEVEL", "LOG_LEVEL"},
-		"log.format":              {"IM_LOG_FORMAT", "LOG_FORMAT"},
-		"mysql.host":              {"IM_MYSQL_HOST", "MYSQL_HOST"},
-		"mysql.port":              {"IM_MYSQL_PORT", "MYSQL_PORT"},
-		"mysql.user":              {"IM_MYSQL_USER", "MYSQL_USER"},
-		"mysql.password":          {"IM_MYSQL_PASSWORD", "MYSQL_PASSWORD"},
-		"mysql.database":          {"IM_MYSQL_DATABASE", "MYSQL_DATABASE"},
-		"mysql.charset":           {"IM_MYSQL_CHARSET", "MYSQL_CHARSET"},
-		"mysql.max_open_conns":    {"IM_MYSQL_MAX_OPEN_CONNS", "MYSQL_MAX_OPEN_CONNS"},
-		"mysql.max_idle_conns":    {"IM_MYSQL_MAX_IDLE_CONNS", "MYSQL_MAX_IDLE_CONNS"},
-		"mysql.conn_max_lifetime": {"IM_MYSQL_CONN_MAX_LIFETIME", "MYSQL_CONN_MAX_LIFETIME"},
+		"ws.heartbeat_timeout":     {"IM_WS_HEARTBEAT_TIMEOUT", "WS_HEARTBEAT_TIMEOUT"},
+		"ws.write_timeout":         {"IM_WS_WRITE_TIMEOUT", "WS_WRITE_TIMEOUT"},
+		"ws.max_frame_bytes":       {"IM_WS_MAX_FRAME_BYTES", "WS_MAX_FRAME_BYTES"},
+		"app.name":                 {"IM_APP_NAME", "APP_NAME"},
+		"app.env":                  {"IM_APP_ENV", "APP_ENV"},
+		"app.node_id":              {"IM_APP_NODE_ID", "APP_NODE_ID"},
+		"server.addr":              {"IM_SERVER_ADDR", "SERVER_ADDR"},
+		"server.read_timeout":      {"IM_SERVER_READ_TIMEOUT", "SERVER_READ_TIMEOUT"},
+		"server.write_timeout":     {"IM_SERVER_WRITE_TIMEOUT", "SERVER_WRITE_TIMEOUT"},
+		"server.idle_timeout":      {"IM_SERVER_IDLE_TIMEOUT", "SERVER_IDLE_TIMEOUT"},
+		"server.shutdown_timeout":  {"IM_SERVER_SHUTDOWN_TIMEOUT", "SERVER_SHUTDOWN_TIMEOUT"},
+		"server.max_body_bytes":    {"IM_SERVER_MAX_BODY_BYTES", "SERVER_MAX_BODY_BYTES"},
+		"cors.allowed_origins":     {"IM_CORS_ALLOWED_ORIGINS", "CORS_ALLOWED_ORIGINS"},
+		"log.level":                {"IM_LOG_LEVEL", "LOG_LEVEL"},
+		"log.format":               {"IM_LOG_FORMAT", "LOG_FORMAT"},
+		"mysql.host":               {"IM_MYSQL_HOST", "MYSQL_HOST"},
+		"mysql.port":               {"IM_MYSQL_PORT", "MYSQL_PORT"},
+		"mysql.user":               {"IM_MYSQL_USER", "MYSQL_USER"},
+		"mysql.password":           {"IM_MYSQL_PASSWORD", "MYSQL_PASSWORD"},
+		"mysql.database":           {"IM_MYSQL_DATABASE", "MYSQL_DATABASE"},
+		"mysql.charset":            {"IM_MYSQL_CHARSET", "MYSQL_CHARSET"},
+		"mysql.max_open_conns":     {"IM_MYSQL_MAX_OPEN_CONNS", "MYSQL_MAX_OPEN_CONNS"},
+		"mysql.max_idle_conns":     {"IM_MYSQL_MAX_IDLE_CONNS", "MYSQL_MAX_IDLE_CONNS"},
+		"mysql.conn_max_lifetime":  {"IM_MYSQL_CONN_MAX_LIFETIME", "MYSQL_CONN_MAX_LIFETIME"},
 		"mysql.conn_max_idle_time": {"IM_MYSQL_CONN_MAX_IDLE_TIME", "MYSQL_CONN_MAX_IDLE_TIME"},
-		"mysql.dial_timeout":      {"IM_MYSQL_DIAL_TIMEOUT", "MYSQL_DIAL_TIMEOUT"},
-		"redis.addr":              {"IM_REDIS_ADDR", "REDIS_ADDR"},
-		"redis.password":          {"IM_REDIS_PASSWORD", "REDIS_PASSWORD"},
-		"redis.db":                {"IM_REDIS_DB", "REDIS_DB"},
-		"redis.pool_size":         {"IM_REDIS_POOL_SIZE", "REDIS_POOL_SIZE"},
-		"redis.min_idle_conns":    {"IM_REDIS_MIN_IDLE_CONNS", "REDIS_MIN_IDLE_CONNS"},
-		"redis.dial_timeout":      {"IM_REDIS_DIAL_TIMEOUT", "REDIS_DIAL_TIMEOUT"},
-		"redis.read_timeout":      {"IM_REDIS_READ_TIMEOUT", "REDIS_READ_TIMEOUT"},
-		"redis.write_timeout":     {"IM_REDIS_WRITE_TIMEOUT", "REDIS_WRITE_TIMEOUT"},
-		"snowflake.node_id":       {"IM_SNOWFLAKE_NODE_ID", "SNOWFLAKE_NODE_ID"},
-		"health.probe_timeout":    {"IM_HEALTH_PROBE_TIMEOUT", "HEALTH_PROBE_TIMEOUT"},
+		"mysql.dial_timeout":       {"IM_MYSQL_DIAL_TIMEOUT", "MYSQL_DIAL_TIMEOUT"},
+		"redis.addr":               {"IM_REDIS_ADDR", "REDIS_ADDR"},
+		"redis.password":           {"IM_REDIS_PASSWORD", "REDIS_PASSWORD"},
+		"redis.db":                 {"IM_REDIS_DB", "REDIS_DB"},
+		"redis.pool_size":          {"IM_REDIS_POOL_SIZE", "REDIS_POOL_SIZE"},
+		"redis.min_idle_conns":     {"IM_REDIS_MIN_IDLE_CONNS", "REDIS_MIN_IDLE_CONNS"},
+		"redis.dial_timeout":       {"IM_REDIS_DIAL_TIMEOUT", "REDIS_DIAL_TIMEOUT"},
+		"redis.read_timeout":       {"IM_REDIS_READ_TIMEOUT", "REDIS_READ_TIMEOUT"},
+		"redis.write_timeout":      {"IM_REDIS_WRITE_TIMEOUT", "REDIS_WRITE_TIMEOUT"},
+		"snowflake.node_id":        {"IM_SNOWFLAKE_NODE_ID", "SNOWFLAKE_NODE_ID"},
+		"health.probe_timeout":     {"IM_HEALTH_PROBE_TIMEOUT", "HEALTH_PROBE_TIMEOUT"},
 	}
 	for key, envs := range bindings {
 		args := append([]string{key}, envs...)

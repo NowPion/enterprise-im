@@ -18,6 +18,11 @@ cors:
     - "http://localhost:5173"
     - "http://127.0.0.1:5173"
 
+ws:
+  heartbeat_timeout: 75s
+  write_timeout: 5s
+  max_frame_bytes: 1048576
+
 log:
   level: info # debug | info | warn | error
   format: json # json | text
