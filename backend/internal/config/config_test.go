@@ -122,3 +122,35 @@ func TestLoadUploadConfigOverrides(t *testing.T) {
 		t.Fatalf("unexpected upload.download_url_ttl: %v", cfg.Upload.DownloadURLTTL)
 	}
 }
+
+func TestLoadMQConfigDefaultsAndOverrides(t *testing.T) {
+	cfg, err := Load("../../configs/config.yaml")
+	if err != nil {
+		t.Fatalf("Load default config failed: %v", err)
+	}
+	if cfg.MQ.StreamMaxLen != 100000 || cfg.MQ.ReadCount != 100 || cfg.MQ.MaxRetries != 5 ||
+		cfg.MQ.StreamRetention.Hours() != 168 || cfg.MQ.BlockTimeout.Milliseconds() != 2000 ||
+		cfg.MQ.ReclaimInterval.Seconds() != 30 || cfg.MQ.ReclaimMinIdle.Seconds() != 30 ||
+		cfg.MQ.MaxPendingAge.Minutes() != 15 {
+		t.Fatalf("unexpected default MQ config: %+v", cfg.MQ)
+	}
+
+	t.Setenv("MQ_STREAM_MAX_LEN", "25000")
+	t.Setenv("MQ_READ_COUNT", "50")
+	t.Setenv("MQ_MAX_RETRIES", "3")
+	t.Setenv("MQ_RECLAIM_MIN_IDLE", "10s")
+	t.Setenv("MQ_WORKER_COUNT", "2")
+	cfg, err = Load("../../configs/config.yaml")
+	if err != nil {
+		t.Fatalf("Load overridden MQ config failed: %v", err)
+	}
+	if cfg.MQ.StreamMaxLen != 25000 || cfg.MQ.ReadCount != 50 || cfg.MQ.MaxRetries != 3 ||
+		cfg.MQ.ReclaimMinIdle.Seconds() != 10 || cfg.MQ.WorkerCount != 2 {
+		t.Fatalf("unexpected overridden MQ config: %+v", cfg.MQ)
+	}
+
+	t.Setenv("MQ_MAX_RETRIES", "0")
+	if _, err := Load("../../configs/config.yaml"); err == nil {
+		t.Fatal("expected error when MQ_MAX_RETRIES=0")
+	}
+}
