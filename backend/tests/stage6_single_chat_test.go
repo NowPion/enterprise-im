@@ -364,9 +364,14 @@ func TestStage6SingleChatConversationAndMessaging(t *testing.T) {
 
 func TestStage6ReceiptFramesStageBoundaryCompatibility(t *testing.T) {
 	rig := newStage6Rig(t)
+	expectDBAvailable(t, rig.db)
+
 	alice := rig.registerAndLogin("s6_rcpt_a", "Alice Rcpt")
 	bob := rig.registerAndLogin("s6_rcpt_b", "Bob Rcpt")
 	_, convID, _ := rig.makeFriends(alice, bob)
+
+	aliceWS := rig.dialWS(alice)
+	bobWS := rig.dialWS(bob)
 
 	// Send one message so seq >= 2 exists.
 	st, _, env, _ := rig.doRequest(http.MethodPost, "/api/v1/conversations/"+convID+"/messages", alice.AccessToken, map[string]any{
@@ -380,50 +385,89 @@ func TestStage6ReceiptFramesStageBoundaryCompatibility(t *testing.T) {
 		Message stage6MessageDTO `json:"message"`
 	}](t, env.Data).Message
 
-	bobWS := rig.dialWS(bob)
-
-	for _, frameCase := range []struct {
-		kind string
-		data map[string]any
-	}{
-		{
-			kind: "msg.delivered_ack",
-			data: map[string]any{
-				"msg_id":          msg.MsgID,
-				"conversation_id": convID,
-				"seq":             msg.Seq,
-			},
-		},
-		{
-			kind: "msg.read_ack",
-			data: map[string]any{
-				"conversation_id": convID,
-				"last_read_seq":   msg.Seq,
-			},
-		},
-	} {
-		reqID := "rcpt-" + uuid.NewString()
-		bobWS.send(frameCase.kind, reqID, frameCase.data)
-
-		// Send a ping immediately after; if unimplemented (Stage 5/6 boundary),
-		// server emits error 18004 before pong. If implemented, pong arrives cleanly.
-		pingID := "ping-" + uuid.NewString()
-		bobWS.send("ping", pingID, map[string]string{"nonce": pingID})
-
-		var sawError *stage6WSErrorData
-		bobWS.awaitFrame("pong after "+frameCase.kind, stage6IOTimeout, func(f stage6WSFrame) bool {
-			if f.Type == "error" && f.ReqID == reqID {
-				errData := decodeWSError(t, f)
-				sawError = &errData
-				return false
-			}
-			return f.Type == "pong" && f.ReqID == pingID
-		})
-		if sawError != nil {
-			if sawError.Code != errcode.ErrWSStateConflict.Code || sawError.Retryable == nil || *sawError.Retryable {
-				t.Fatalf("%s returned error code=%d retryable=%v, want non-retryable 18004 when unimplemented",
-					frameCase.kind, sawError.Code, sawError.Retryable)
-			}
+	bobWS.awaitFrame("bob msg.push for receipt probe", stage6IOTimeout, func(f stage6WSFrame) bool {
+		if f.Type != "msg.push" {
+			return false
 		}
+		pt, m := decodeMsgPushMessage(t, f)
+		return pt == "message" && m.MsgID == msg.MsgID
+	})
+
+	// Stage 7 contract: msg.delivered_ack must succeed (no 18004), notify sender via msg.push(receipt=delivered),
+	// and advance receiver last_delivered_seq.
+	delivReqID := "rcpt-deliv-" + uuid.NewString()
+	bobWS.send("msg.delivered_ack", delivReqID, map[string]any{
+		"msg_id":          msg.MsgID,
+		"conversation_id": convID,
+		"seq":             msg.Seq,
+	})
+	pingDelivID := "ping-" + uuid.NewString()
+	bobWS.send("ping", pingDelivID, map[string]string{"nonce": pingDelivID})
+	bobWS.awaitFrame("pong without error after msg.delivered_ack", stage6IOTimeout, func(f stage6WSFrame) bool {
+		if f.Type == "error" && f.ReqID == delivReqID {
+			t.Fatalf("msg.delivered_ack failed unexpectedly (Stage 7 receipt handler missing/broken): %s", string(f.Data))
+		}
+		return f.Type == "pong" && f.ReqID == pingDelivID
+	})
+
+	aliceWS.awaitFrame("alice receipt delivered push", stage6IOTimeout, func(f stage6WSFrame) bool {
+		if f.Type != "msg.push" {
+			return false
+		}
+		var rcpt struct {
+			PushType         string `json:"push_type"`
+			ConversationID   string `json:"conversation_id"`
+			UserID           string `json:"user_id"`
+			DeliveryStatus   string `json:"delivery_status"`
+			LastDeliveredSeq string `json:"last_delivered_seq"`
+		}
+		if decodeJSONInto(f.Data, &rcpt) != nil {
+			return false
+		}
+		return rcpt.PushType == "receipt" && rcpt.ConversationID == convID &&
+			rcpt.UserID == bob.IDStr && rcpt.DeliveryStatus == model.ReceiptStatusDelivered &&
+			rcpt.LastDeliveredSeq == msg.Seq
+	})
+
+	// Stage 7 contract: msg.read_ack must succeed (no 18004), clear unread_count,
+	// and notify sender via msg.push(receipt=read).
+	readReqID := "rcpt-read-" + uuid.NewString()
+	bobWS.send("msg.read_ack", readReqID, map[string]any{
+		"conversation_id": convID,
+		"last_read_seq":   msg.Seq,
+	})
+	pingReadID := "ping-" + uuid.NewString()
+	bobWS.send("ping", pingReadID, map[string]string{"nonce": pingReadID})
+	bobWS.awaitFrame("pong without error after msg.read_ack", stage6IOTimeout, func(f stage6WSFrame) bool {
+		if f.Type == "error" && f.ReqID == readReqID {
+			t.Fatalf("msg.read_ack failed unexpectedly (Stage 7 receipt handler missing/broken): %s", string(f.Data))
+		}
+		return f.Type == "pong" && f.ReqID == pingReadID
+	})
+
+	aliceWS.awaitFrame("alice receipt read push", stage6IOTimeout, func(f stage6WSFrame) bool {
+		if f.Type != "msg.push" {
+			return false
+		}
+		var rcpt struct {
+			PushType       string `json:"push_type"`
+			ConversationID string `json:"conversation_id"`
+			UserID         string `json:"user_id"`
+			DeliveryStatus string `json:"delivery_status"`
+			LastReadSeq    string `json:"last_read_seq"`
+		}
+		if decodeJSONInto(f.Data, &rcpt) != nil {
+			return false
+		}
+		return rcpt.PushType == "receipt" && rcpt.ConversationID == convID &&
+			rcpt.UserID == bob.IDStr && rcpt.DeliveryStatus == model.ReceiptStatusRead &&
+			rcpt.LastReadSeq == msg.Seq
+	})
+
+	detSt, _, detEnv, _ := rig.doRequest(http.MethodGet, "/api/v1/conversations/"+convID, bob.AccessToken, nil)
+	assertStage6OK(t, "bob conversation detail after read_ack", detSt, detEnv, http.StatusOK)
+	det := extractConversationFromDetail(t, detEnv.Data)
+	if det.LastDeliveredSeq != msg.Seq || det.LastReadSeq != msg.Seq || det.UnreadCount != 0 {
+		t.Fatalf("expected bob watermarks=(%s,%s) unread=0 after receipts, got %+v", msg.Seq, msg.Seq, det)
 	}
 }
