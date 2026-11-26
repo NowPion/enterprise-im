@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import { useAuthorizedMediaSrc } from '@/composables/chat/useAuthorizedMedia'
 
 interface Props {
-  src?: string
+  src?: string | null
   name?: string
   size?: number
   online?: boolean
@@ -19,10 +20,11 @@ const props = withDefaults(defineProps<Props>(), {
   rounded: 'md',
 })
 
+const { resolvedUrl } = useAuthorizedMediaSrc(() => props.src)
 const imgFailed = ref(false)
 
 watch(
-  () => props.src,
+  () => [props.src, resolvedUrl.value] as const,
   () => {
     imgFailed.value = false
   },
@@ -30,7 +32,7 @@ watch(
 
 const displaySrc = computed(() => {
   if (imgFailed.value) return ''
-  return props.src?.trim() || ''
+  return resolvedUrl.value
 })
 
 const initial = computed(() => {

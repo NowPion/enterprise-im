@@ -2,17 +2,25 @@
 import { onMounted, ref } from 'vue'
 import AppNavRail from '@/components/common/AppNavRail.vue'
 import ProfileSettingsDialog from '@/components/common/ProfileSettingsDialog.vue'
+import { useChatRealtime } from '@/composables/chat/useChatRealtime'
 import { useAuthStore } from '@/stores/auth'
 import { useContactStore } from '@/stores/contact'
+import { useConversationStore } from '@/stores/conversation'
 
 const authStore = useAuthStore()
 const contactStore = useContactStore()
+const conversationStore = useConversationStore()
+const { ensureRealtimeConnected, reconcileOnAuthenticatedOpen } = useChatRealtime()
 const profileDialogOpen = ref(false)
 
 onMounted(() => {
   if (authStore.isAuthenticated) {
     authStore.connectWS()
-    contactStore.bindRealtimeListeners()
+    ensureRealtimeConnected()
+    contactStore.bindWSClient()
+    if (conversationStore.conversations.length === 0) {
+      void reconcileOnAuthenticatedOpen()
+    }
     void Promise.all([
       contactStore.fetchFriends(true),
       contactStore.fetchRequests('received', 'pending', true),

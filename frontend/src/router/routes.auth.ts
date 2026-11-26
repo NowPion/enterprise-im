@@ -20,6 +20,6 @@ export const authAppRoutes: RouteRecordRaw[] = [
     path: '/contacts',
     name: 'Contacts',
     component: () => import('@/views/contacts/ContactsView.vue'),
-    meta: { title: '联系人' },
+    meta: { requiresAuth: true, title: '联系人' },
   },
 ]
