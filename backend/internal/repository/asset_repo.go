@@ -133,7 +133,10 @@ func (r *AssetRepository) GetActiveByAssetID(ctx context.Context, assetID string
 	return &asset, nil
 }
 
-// IsConversationMember reports whether userID is a member of conversationID.
+// IsConversationMember reports whether userID currently has authorized access to conversationID.
+// For single conversations, membership in `conversation_members` is sufficient (preserving read access
+// to historical attachments even after unfriending/hiding). For group conversations, the user must also
+// hold an active `group_members` record so removed or left members lose attachment access immediately.
 func (r *AssetRepository) IsConversationMember(ctx context.Context, conversationID, userID uint64) (bool, error) {
 	if r == nil || r.db == nil {
 		return false, errors.New("mysql db handle is nil")
@@ -143,19 +146,18 @@ func (r *AssetRepository) IsConversationMember(ctx context.Context, conversation
 	}
 
 	var one int
-	err := r.db.WithContext(ctx).
-		Model(&model.ConversationMember{}).
-		Select("1").
-		Where("conversation_id = ? AND user_id = ?", conversationID, userID).
-		Limit(1).
-		Take(&one).Error
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return false, nil
-		}
-		return false, err
+	res := r.db.WithContext(ctx).Raw(
+		"SELECT 1 FROM `conversations` AS c "+
+			"INNER JOIN `conversation_members` AS cm ON cm.conversation_id = c.id AND cm.user_id = ? "+
+			"LEFT JOIN `group_members` AS gm ON gm.group_id = c.group_id AND gm.user_id = ? "+
+			"WHERE c.id = ? AND (c.type = ? OR (c.type = ? AND c.group_id IS NOT NULL AND gm.id IS NOT NULL)) "+
+			"LIMIT 1",
+		userID, userID, conversationID, model.ConversationTypeSingle, model.ConversationTypeGroup,
+	).Scan(&one)
+	if res.Error != nil {
+		return false, res.Error
 	}
-	return true, nil
+	return res.RowsAffected > 0 && one == 1, nil
 }
 
 // SoftDeleteOwned atomically verifies asset ownership and absence of message references,

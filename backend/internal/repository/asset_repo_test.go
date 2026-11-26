@@ -96,15 +96,36 @@ func TestLiveAssetRepositoryIntegration(t *testing.T) {
 		Role:         model.UserRoleUser,
 		Status:       model.UserStatusActive,
 	}
+	u3 := model.User{
+		Username:     "asset_u3_" + suffix,
+		PasswordHash: "$2a$10$8uLi1z7yKc9N28SrYAXW1uRurpmO9uk66JQjVxSE1Z8bSAtcbeE82",
+		Nickname:     "AssetU3",
+		Role:         model.UserRoleUser,
+		Status:       model.UserStatusActive,
+	}
 	if err := db.Create(&u1).Error; err != nil {
 		t.Fatalf("create u1: %v", err)
 	}
 	if err := db.Create(&u2).Error; err != nil {
 		t.Fatalf("create u2: %v", err)
 	}
+	if err := db.Create(&u3).Error; err != nil {
+		t.Fatalf("create u3: %v", err)
+	}
+
+	var createdConvIDs []uint64
+	var createdGroupIDs []uint64
 	defer func() {
-		_ = db.Where("owner_id IN ?", []uint64{u1.ID, u2.ID}).Delete(&model.Asset{}).Error
-		_ = db.Where("id IN ?", []uint64{u1.ID, u2.ID}).Delete(&model.User{}).Error
+		if len(createdConvIDs) > 0 {
+			_ = db.Where("conversation_id IN ?", createdConvIDs).Delete(&model.ConversationMember{}).Error
+			_ = db.Where("id IN ?", createdConvIDs).Delete(&model.Conversation{}).Error
+		}
+		if len(createdGroupIDs) > 0 {
+			_ = db.Where("group_id IN ?", createdGroupIDs).Delete(&model.GroupMember{}).Error
+			_ = db.Where("id IN ?", createdGroupIDs).Delete(&model.Group{}).Error
+		}
+		_ = db.Where("owner_id IN ?", []uint64{u1.ID, u2.ID, u3.ID}).Delete(&model.Asset{}).Error
+		_ = db.Where("id IN ?", []uint64{u1.ID, u2.ID, u3.ID}).Delete(&model.User{}).Error
 	}()
 
 	assetID1 := uuid.NewString()
@@ -202,5 +223,99 @@ func TestLiveAssetRepositoryIntegration(t *testing.T) {
 	}
 	if updatedUser.AvatarURL != avatarURL {
 		t.Fatalf("expected avatar_url %q, got %q", avatarURL, updatedUser.AvatarURL)
+	}
+
+	// Single conversation membership: remains true even when conversation_members.is_visible=false.
+	dk, err := FormatDirectKey(u1.ID, u2.ID)
+	if err != nil {
+		t.Fatalf("FormatDirectKey: %v", err)
+	}
+	singleConv := model.Conversation{
+		Type:      model.ConversationTypeSingle,
+		DirectKey: &dk,
+	}
+	if err := db.Create(&singleConv).Error; err != nil {
+		t.Fatalf("create single conv: %v", err)
+	}
+	createdConvIDs = append(createdConvIDs, singleConv.ID)
+	if err := db.Create(&model.ConversationMember{ConversationID: singleConv.ID, UserID: u1.ID, IsVisible: true}).Error; err != nil {
+		t.Fatalf("create single member u1: %v", err)
+	}
+	if err := db.Create(&model.ConversationMember{ConversationID: singleConv.ID, UserID: u2.ID, IsVisible: false}).Error; err != nil {
+		t.Fatalf("create single member u2: %v", err)
+	}
+	if ok, err := repo.IsConversationMember(ctx, singleConv.ID, u2.ID); err != nil || !ok {
+		t.Fatalf("expected single conversation hidden member u2 to retain access, ok=%v err=%v", ok, err)
+	}
+	if ok, err := repo.IsConversationMember(ctx, singleConv.ID, u3.ID); err != nil || ok {
+		t.Fatalf("expected non-member u3 denied in single conversation, ok=%v err=%v", ok, err)
+	}
+
+	// Group conversation membership: must check group_members; leaving/removal hides conversation_members
+	// and deletes group_members, which must revoke attachment access immediately.
+	grp := model.Group{
+		Name:    "Asset Auth Group " + suffix,
+		OwnerID: u1.ID,
+		Status:  model.GroupStatusActive,
+	}
+	if err := db.Create(&grp).Error; err != nil {
+		t.Fatalf("create group: %v", err)
+	}
+	createdGroupIDs = append(createdGroupIDs, grp.ID)
+
+	groupConv := model.Conversation{
+		Type:    model.ConversationTypeGroup,
+		GroupID: &grp.ID,
+	}
+	if err := db.Create(&groupConv).Error; err != nil {
+		t.Fatalf("create group conv: %v", err)
+	}
+	createdConvIDs = append(createdConvIDs, groupConv.ID)
+
+	for _, uid := range []uint64{u1.ID, u2.ID} {
+		role := model.GroupRoleMember
+		if uid == u1.ID {
+			role = model.GroupRoleOwner
+		}
+		if err := db.Create(&model.GroupMember{GroupID: grp.ID, UserID: uid, Role: role}).Error; err != nil {
+			t.Fatalf("create group member %d: %v", uid, err)
+		}
+		if err := db.Create(&model.ConversationMember{ConversationID: groupConv.ID, UserID: uid, IsVisible: true}).Error; err != nil {
+			t.Fatalf("create conv member %d: %v", uid, err)
+		}
+	}
+
+	if ok, err := repo.IsConversationMember(ctx, groupConv.ID, u2.ID); err != nil || !ok {
+		t.Fatalf("expected active group member u2 allowed, ok=%v err=%v", ok, err)
+	}
+
+	// Simulate RemoveMember / Leave: delete group_members row, hide conversation_members row.
+	if err := db.Where("group_id = ? AND user_id = ?", grp.ID, u2.ID).Delete(&model.GroupMember{}).Error; err != nil {
+		t.Fatalf("delete group member u2: %v", err)
+	}
+	if err := db.Model(&model.ConversationMember{}).
+		Where("conversation_id = ? AND user_id = ?", groupConv.ID, u2.ID).
+		Updates(map[string]any{"is_visible": false, "unread_count": 0}).Error; err != nil {
+		t.Fatalf("hide conv member u2: %v", err)
+	}
+
+	if ok, err := repo.IsConversationMember(ctx, groupConv.ID, u2.ID); err != nil || ok {
+		t.Fatalf("expected removed/left group member u2 denied despite retained conversation_members row, ok=%v err=%v", ok, err)
+	}
+	if ok, err := repo.IsConversationMember(ctx, groupConv.ID, u1.ID); err != nil || !ok {
+		t.Fatalf("expected remaining group member u1 allowed, ok=%v err=%v", ok, err)
+	}
+
+	// Simulate re-join: restore group_members and conversation_members visibility.
+	if err := db.Create(&model.GroupMember{GroupID: grp.ID, UserID: u2.ID, Role: model.GroupRoleMember}).Error; err != nil {
+		t.Fatalf("rejoin group member u2: %v", err)
+	}
+	if err := db.Model(&model.ConversationMember{}).
+		Where("conversation_id = ? AND user_id = ?", groupConv.ID, u2.ID).
+		Update("is_visible", true).Error; err != nil {
+		t.Fatalf("unhide conv member u2: %v", err)
+	}
+	if ok, err := repo.IsConversationMember(ctx, groupConv.ID, u2.ID); err != nil || !ok {
+		t.Fatalf("expected rejoined group member u2 allowed, ok=%v err=%v", ok, err)
 	}
 }

@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 
 	"enterprise-im/backend/internal/config"
@@ -30,14 +31,18 @@ import (
 )
 
 type memAssetStore struct {
-	mu      sync.Mutex
-	nextID  uint64
-	assets  map[string]model.Asset
-	users   map[uint64]model.User
-	members map[[2]uint64]bool
+	mu           sync.Mutex
+	nextID       uint64
+	assets       map[string]model.Asset
+	users        map[uint64]model.User
+	convs        map[uint64]model.Conversation
+	convMembers  map[[2]uint64]model.ConversationMember
+	groupMembers map[[2]uint64]model.GroupMember
 }
 
 func newMemAssetStore() *memAssetStore {
+	dk := "10001:10002"
+	gid := uint64(50001)
 	return &memAssetStore{
 		nextID: 1,
 		assets: make(map[string]model.Asset),
@@ -46,9 +51,19 @@ func newMemAssetStore() *memAssetStore {
 			10002: {ID: 10002, Username: "bob", Nickname: "Bob", Role: model.UserRoleUser, Status: model.UserStatusActive},
 			10003: {ID: 10003, Username: "carol", Nickname: "Carol", Role: model.UserRoleUser, Status: model.UserStatusActive},
 		},
-		members: map[[2]uint64]bool{
-			{90001, 10001}: true,
-			{90001, 10002}: true,
+		convs: map[uint64]model.Conversation{
+			90001: {ID: 90001, Type: model.ConversationTypeSingle, DirectKey: &dk},
+			90002: {ID: 90002, Type: model.ConversationTypeGroup, GroupID: &gid},
+		},
+		convMembers: map[[2]uint64]model.ConversationMember{
+			{90001, 10001}: {ConversationID: 90001, UserID: 10001, IsVisible: true},
+			{90001, 10002}: {ConversationID: 90001, UserID: 10002, IsVisible: true},
+			{90002, 10001}: {ConversationID: 90002, UserID: 10001, IsVisible: true},
+			{90002, 10002}: {ConversationID: 90002, UserID: 10002, IsVisible: true},
+		},
+		groupMembers: map[[2]uint64]model.GroupMember{
+			{50001, 10001}: {GroupID: 50001, UserID: 10001, Role: model.GroupRoleOwner},
+			{50001, 10002}: {GroupID: 50001, UserID: 10002, Role: model.GroupRoleMember},
 		},
 	}
 }
@@ -117,7 +132,21 @@ func (m *memAssetStore) GetActiveByAssetID(_ context.Context, assetID string) (*
 func (m *memAssetStore) IsConversationMember(_ context.Context, conversationID, userID uint64) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.members[[2]uint64{conversationID, userID}], nil
+	conv, ok := m.convs[conversationID]
+	if !ok {
+		return false, nil
+	}
+	if _, isConvMember := m.convMembers[[2]uint64{conversationID, userID}]; !isConvMember {
+		return false, nil
+	}
+	if conv.Type == model.ConversationTypeSingle {
+		return true, nil
+	}
+	if conv.Type == model.ConversationTypeGroup && conv.GroupID != nil {
+		_, isGroupMember := m.groupMembers[[2]uint64{*conv.GroupID, userID}]
+		return isGroupMember, nil
+	}
+	return false, nil
 }
 
 func (m *memAssetStore) SoftDeleteOwned(_ context.Context, assetID string, ownerID uint64, deletedAt time.Time) (*model.Asset, error) {
@@ -675,5 +704,257 @@ func TestUploadServiceRejections(t *testing.T) {
 	}
 	if _, pathErr := svc.storage.ResolveSafeKey("/etc/passwd"); !errors.Is(pathErr, ErrStorageInvalidPath) {
 		t.Fatalf("expected ErrStorageInvalidPath for absolute path, got %v", pathErr)
+	}
+}
+
+func TestUploadServiceGroupLeaveRemovalAndSingleChatHideAuthorization(t *testing.T) {
+	ctx := context.Background()
+	svc, store, _ := newTestUploadService(t)
+	pngData := makePNGBytes(t, 64, 64)
+
+	// 1. Single chat attachment remains accessible to both members even after unfriend hides conversation_members.
+	singleDTO, bizErr := svc.Upload(ctx, UploadInput{
+		OwnerID:      10001,
+		Purpose:      model.AssetPurposeImage,
+		RawFilename:  "single.png",
+		DeclaredMime: "image/png",
+		TempPath:     writeStageTemp(t, svc, pngData),
+		SizeBytes:    uint64(len(pngData)),
+	})
+	if bizErr != nil {
+		t.Fatalf("upload single.png: %v", bizErr)
+	}
+	store.bindToMessage(singleDTO.AssetID, 888001, 90001)
+
+	store.mu.Lock()
+	cmSingle := store.convMembers[[2]uint64{90001, 10002}]
+	cmSingle.IsVisible = false
+	store.convMembers[[2]uint64{90001, 10002}] = cmSingle
+	store.mu.Unlock()
+
+	if _, err := svc.GetAsset(ctx, 10002, singleDTO.AssetID); err != nil {
+		t.Fatalf("expected hidden single-chat member 10002 to retain GetAsset access, got %v", err)
+	}
+	dlSingle, dlSingleErr := svc.PrepareDownload(ctx, 10002, singleDTO.AssetID, DownloadOptions{})
+	if dlSingleErr != nil {
+		t.Fatalf("expected hidden single-chat member 10002 to retain download access, got %v", dlSingleErr)
+	}
+	_ = dlSingle.File.Close()
+
+	// 2. Group chat attachment: active member 10002 can GetAsset & PrepareDownload,
+	// then after leaving/being removed (group_members deleted, conversation_members kept hidden),
+	// 10002 is immediately denied (16004) on both GetAsset and PrepareDownload.
+	groupDTO, bizErr := svc.Upload(ctx, UploadInput{
+		OwnerID:      10001,
+		Purpose:      model.AssetPurposeImage,
+		RawFilename:  "group.png",
+		DeclaredMime: "image/png",
+		TempPath:     writeStageTemp(t, svc, pngData),
+		SizeBytes:    uint64(len(pngData)),
+	})
+	if bizErr != nil {
+		t.Fatalf("upload group.png: %v", bizErr)
+	}
+	store.bindToMessage(groupDTO.AssetID, 888002, 90002)
+
+	if _, err := svc.GetAsset(ctx, 10002, groupDTO.AssetID); err != nil {
+		t.Fatalf("expected active group member 10002 GetAsset to succeed, got %v", err)
+	}
+	dlGroup, dlGroupErr := svc.PrepareDownload(ctx, 10002, groupDTO.AssetID, DownloadOptions{})
+	if dlGroupErr != nil {
+		t.Fatalf("expected active group member 10002 PrepareDownload to succeed, got %v", dlGroupErr)
+	}
+	_ = dlGroup.File.Close()
+
+	// Simulate Leave / RemoveMember: delete group_members entry and hide conversation_members row.
+	store.mu.Lock()
+	delete(store.groupMembers, [2]uint64{50001, 10002})
+	cmGroup := store.convMembers[[2]uint64{90002, 10002}]
+	cmGroup.IsVisible = false
+	cmGroup.UnreadCount = 0
+	store.convMembers[[2]uint64{90002, 10002}] = cmGroup
+	store.mu.Unlock()
+
+	if _, err := svc.GetAsset(ctx, 10002, groupDTO.AssetID); err == nil || err.Code != errcode.ErrAssetAccessDenied.Code {
+		t.Fatalf("expected 16004 for removed/left group member GetAsset, got %v", err)
+	}
+	if _, err := svc.PrepareDownload(ctx, 10002, groupDTO.AssetID, DownloadOptions{}); err == nil || err.Code != errcode.ErrAssetAccessDenied.Code {
+		t.Fatalf("expected 16004 for removed/left group member PrepareDownload, got %v", err)
+	}
+	if _, err := svc.PrepareDownload(ctx, 10002, groupDTO.AssetID, DownloadOptions{Variant: "thumbnail"}); err == nil || err.Code != errcode.ErrAssetAccessDenied.Code {
+		t.Fatalf("expected 16004 for removed/left group member thumbnail download, got %v", err)
+	}
+}
+
+func TestLiveUploadServiceGroupLeaveAndRemovalAuthorization(t *testing.T) {
+	mysqlPass := os.Getenv("MYSQL_PASSWORD")
+	if mysqlPass == "" {
+		mysqlPass = os.Getenv("IM_MYSQL_PASSWORD")
+	}
+	if mysqlPass == "" {
+		t.Skip("skipping live upload service authorization test: MYSQL_PASSWORD not set")
+	}
+
+	host := os.Getenv("MYSQL_HOST")
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	port := 3306
+	user := os.Getenv("MYSQL_USER")
+	if user == "" {
+		user = "root"
+	}
+	dbName := os.Getenv("MYSQL_DATABASE")
+	if dbName == "" {
+		dbName = "enterprise_im"
+	}
+
+	log, err := logger.New(config.LogConfig{Level: "warn", Format: "json"}, nil)
+	if err != nil {
+		t.Fatalf("new logger: %v", err)
+	}
+	db, err := repository.NewMySQL(config.MySQLConfig{
+		Host:            host,
+		Port:            port,
+		User:            user,
+		Password:        mysqlPass,
+		Database:        dbName,
+		Charset:         "utf8mb4",
+		MaxOpenConns:    5,
+		MaxIdleConns:    2,
+		ConnMaxLifetime: 5 * time.Minute,
+		ConnMaxIdleTime: 2 * time.Minute,
+		DialTimeout:     5 * time.Second,
+	}, log)
+	if err != nil {
+		t.Fatalf("connect mysql: %v", err)
+	}
+	defer func() { _ = repository.CloseMySQL(db) }()
+
+	ctx := context.Background()
+	suffix := uuid.NewString()[:8]
+	uOwner := model.User{
+		Username:     "live_up_owner_" + suffix,
+		PasswordHash: "$2a$10$8uLi1z7yKc9N28SrYAXW1uRurpmO9uk66JQjVxSE1Z8bSAtcbeE82",
+		Nickname:     "Owner",
+		Role:         model.UserRoleUser,
+		Status:       model.UserStatusActive,
+	}
+	uMember := model.User{
+		Username:     "live_up_member_" + suffix,
+		PasswordHash: "$2a$10$8uLi1z7yKc9N28SrYAXW1uRurpmO9uk66JQjVxSE1Z8bSAtcbeE82",
+		Nickname:     "Member",
+		Role:         model.UserRoleUser,
+		Status:       model.UserStatusActive,
+	}
+	if err := db.Create(&uOwner).Error; err != nil {
+		t.Fatalf("create owner: %v", err)
+	}
+	if err := db.Create(&uMember).Error; err != nil {
+		t.Fatalf("create member: %v", err)
+	}
+
+	grp := model.Group{Name: "Live Upload Auth " + suffix, OwnerID: uOwner.ID, Status: model.GroupStatusActive}
+	if err := db.Create(&grp).Error; err != nil {
+		t.Fatalf("create group: %v", err)
+	}
+	groupConv := model.Conversation{Type: model.ConversationTypeGroup, GroupID: &grp.ID}
+	if err := db.Create(&groupConv).Error; err != nil {
+		t.Fatalf("create group conv: %v", err)
+	}
+	defer func() {
+		_ = db.Where("owner_id IN ?", []uint64{uOwner.ID, uMember.ID}).Delete(&model.Asset{}).Error
+		_ = db.Where("conversation_id = ?", groupConv.ID).Delete(&model.ConversationMember{}).Error
+		_ = db.Where("id = ?", groupConv.ID).Delete(&model.Conversation{}).Error
+		_ = db.Where("group_id = ?", grp.ID).Delete(&model.GroupMember{}).Error
+		_ = db.Where("id = ?", grp.ID).Delete(&model.Group{}).Error
+		_ = db.Where("id IN ?", []uint64{uOwner.ID, uMember.ID}).Delete(&model.User{}).Error
+	}()
+
+	if err := db.Create(&model.GroupMember{GroupID: grp.ID, UserID: uOwner.ID, Role: model.GroupRoleOwner}).Error; err != nil {
+		t.Fatalf("create owner group member: %v", err)
+	}
+	if err := db.Create(&model.GroupMember{GroupID: grp.ID, UserID: uMember.ID, Role: model.GroupRoleMember}).Error; err != nil {
+		t.Fatalf("create member group member: %v", err)
+	}
+	if err := db.Create(&model.ConversationMember{ConversationID: groupConv.ID, UserID: uOwner.ID, IsVisible: true}).Error; err != nil {
+		t.Fatalf("create owner conv member: %v", err)
+	}
+	if err := db.Create(&model.ConversationMember{ConversationID: groupConv.ID, UserID: uMember.ID, IsVisible: true}).Error; err != nil {
+		t.Fatalf("create member conv member: %v", err)
+	}
+
+	rootDir := filepath.Join(t.TempDir(), "uploads")
+	storage, err := NewDiskStorage(rootDir, "")
+	if err != nil {
+		t.Fatalf("NewDiskStorage: %v", err)
+	}
+	svc := NewUploadService(repository.NewAssetRepository(db), nil, storage, config.UploadConfig{
+		Dir:                rootDir,
+		MaxImageBytes:      2 << 20,
+		MaxFileBytes:       4 << 20,
+		MaxVoiceBytes:      2 << 20,
+		MaxAvatarBytes:     1 << 20,
+		MaxImageWidth:      2048,
+		MaxImageHeight:     2048,
+		MaxImagePixels:     1000000,
+		MaxVoiceDurationMs: 10000,
+		ThumbnailMaxDim:    128,
+		DownloadURLTTL:     15 * time.Minute,
+	}, "live-upload-auth-secret-32-bytes", log)
+
+	pngData := makePNGBytes(t, 64, 64)
+	dto, bizErr := svc.Upload(ctx, UploadInput{
+		OwnerID:      uOwner.ID,
+		Purpose:      model.AssetPurposeImage,
+		RawFilename:  "group-live.png",
+		DeclaredMime: "image/png",
+		TempPath:     writeStageTemp(t, svc, pngData),
+		SizeBytes:    uint64(len(pngData)),
+	})
+	if bizErr != nil {
+		t.Fatalf("live Upload failed: %v", bizErr)
+	}
+
+	msgID := uint64(990001)
+	now := time.Now().UTC()
+	if err := db.Model(&model.Asset{}).
+		Where("asset_id = ?", dto.AssetID).
+		Updates(map[string]any{
+			"ref_type":            model.AssetRefMessage,
+			"ref_id":              msgID,
+			"ref_conversation_id": groupConv.ID,
+			"ref_count":           1,
+			"bound_at":            now,
+		}).Error; err != nil {
+		t.Fatalf("bind asset to group message: %v", err)
+	}
+
+	// Active group member can GetAsset and PrepareDownload.
+	if _, err := svc.GetAsset(ctx, uMember.ID, dto.AssetID); err != nil {
+		t.Fatalf("expected active group member GetAsset allowed, got %v", err)
+	}
+	dl, dlErr := svc.PrepareDownload(ctx, uMember.ID, dto.AssetID, DownloadOptions{})
+	if dlErr != nil {
+		t.Fatalf("expected active group member PrepareDownload allowed, got %v", dlErr)
+	}
+	_ = dl.File.Close()
+
+	// Remove/Leave group: delete group_members row, keep conversation_members hidden.
+	if err := db.Where("group_id = ? AND user_id = ?", grp.ID, uMember.ID).Delete(&model.GroupMember{}).Error; err != nil {
+		t.Fatalf("delete group_members row: %v", err)
+	}
+	if err := db.Model(&model.ConversationMember{}).
+		Where("conversation_id = ? AND user_id = ?", groupConv.ID, uMember.ID).
+		Updates(map[string]any{"is_visible": false, "unread_count": 0}).Error; err != nil {
+		t.Fatalf("hide conversation_members row: %v", err)
+	}
+
+	// Removed/left user is immediately denied on GetAsset and PrepareDownload (16004).
+	if _, err := svc.GetAsset(ctx, uMember.ID, dto.AssetID); err == nil || err.Code != errcode.ErrAssetAccessDenied.Code {
+		t.Fatalf("expected 16004 for removed group member GetAsset, got %v", err)
+	}
+	if _, err := svc.PrepareDownload(ctx, uMember.ID, dto.AssetID, DownloadOptions{}); err == nil || err.Code != errcode.ErrAssetAccessDenied.Code {
+		t.Fatalf("expected 16004 for removed group member PrepareDownload, got %v", err)
 	}
 }

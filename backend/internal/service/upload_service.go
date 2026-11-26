@@ -27,6 +27,8 @@ type AssetStore interface {
 	Create(ctx context.Context, asset *model.Asset) error
 	CreateAvatarAndBindUser(ctx context.Context, asset *model.Asset, userID uint64, avatarURL string, boundAt time.Time) (*model.User, error)
 	GetActiveByAssetID(ctx context.Context, assetID string) (*model.Asset, error)
+	// IsConversationMember must enforce current `group_members` membership for group conversations
+	// (removed/left users whose `conversation_members` row is merely hidden must return false).
 	IsConversationMember(ctx context.Context, conversationID, userID uint64) (bool, error)
 	SoftDeleteOwned(ctx context.Context, assetID string, ownerID uint64, deletedAt time.Time) (*model.Asset, error)
 }
