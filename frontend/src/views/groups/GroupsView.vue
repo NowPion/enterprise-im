@@ -1,15 +1,17 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { ArrowLeft, ChatDotRound, Plus, Refresh, UserFilled } from '@element-plus/icons-vue'
 import { extractErrorMessage } from '@/api/group'
+import AuthorizedAvatar from '@/components/chat/AuthorizedAvatar.vue'
 import GroupAuditPanel from '@/components/groups/GroupAuditPanel.vue'
 import GroupCreateDialog from '@/components/groups/GroupCreateDialog.vue'
 import GroupInviteDialog from '@/components/groups/GroupInviteDialog.vue'
 import GroupMemberList from '@/components/groups/GroupMemberList.vue'
 import GroupProfilePanel from '@/components/groups/GroupProfilePanel.vue'
 import { useGroupPermissions } from '@/composables/groups/useGroupPermissions'
+import { getWSClient } from '@/stores/auth'
 import { useGroupStore } from '@/stores/group'
 import type { AddGroupMembersResult, CreateGroupResult, GroupStatus } from '@/types/group'
 
@@ -108,8 +110,17 @@ watch(
   { immediate: true },
 )
 
+let unbindGroupWs: (() => void) | null = null
+
 onMounted(() => {
+  unbindGroupWs?.()
+  unbindGroupWs = groupStore.bindWsClient(getWSClient())
   void loadGroupList()
+})
+
+onUnmounted(() => {
+  unbindGroupWs?.()
+  unbindGroupWs = null
 })
 </script>
 
@@ -153,10 +164,7 @@ onMounted(() => {
           :class="{ 'is-active': item.id === routeGroupId }"
           @click="openGroup(item.id)"
         >
-          <div class="item-avatar">
-            <img v-if="item.avatar_url" :src="item.avatar_url" alt="" class="item-avatar-img" />
-            <el-icon v-else :size="18"><UserFilled /></el-icon>
-          </div>
+          <AuthorizedAvatar :src="item.avatar_url" :name="item.name" :size="40" />
           <div class="item-content">
             <div class="item-top">
               <span class="item-name">{{ item.name }}</span>
@@ -374,26 +382,6 @@ onMounted(() => {
 
 .group-list-item.is-active {
   background-color: #eceef2;
-}
-
-.item-avatar {
-  width: 40px;
-  height: 40px;
-  border-radius: 6px;
-  background-color: #f5f6f8;
-  border: 1px solid #e5e7eb;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #6b7280;
-  overflow: hidden;
-  flex-shrink: 0;
-}
-
-.item-avatar-img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
 }
 
 .item-content {

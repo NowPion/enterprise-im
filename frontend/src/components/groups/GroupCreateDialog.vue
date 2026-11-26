@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Check, Close, Plus, Search, Upload, UserFilled } from '@element-plus/icons-vue'
 import { extractErrorMessage, listFriendCandidates, searchCandidateUsers } from '@/api/group'
+import { useAuthorizedMediaSrc } from '@/composables/chat/useAuthorizedMedia'
 import { useAuthStore } from '@/stores/auth'
 import { useGroupStore } from '@/stores/group'
 import type { CandidateUser, CreateGroupResult } from '@/types/group'
@@ -23,6 +24,7 @@ const name = ref('')
 const announcement = ref('')
 const avatarAssetId = ref<string | null>(null)
 const avatarPreviewUrl = ref('')
+const { resolvedUrl: resolvedAvatarPreviewUrl } = useAuthorizedMediaSrc(avatarPreviewUrl)
 const uploadingAvatar = ref(false)
 
 const searchQuery = ref('')
@@ -189,7 +191,12 @@ function closeDialog() {
       <div class="form-top-row">
         <div class="avatar-uploader">
           <div class="avatar-preview">
-            <img v-if="avatarPreviewUrl" :src="avatarPreviewUrl" alt="群头像" class="avatar-img" />
+            <img
+              v-if="resolvedAvatarPreviewUrl"
+              :src="resolvedAvatarPreviewUrl"
+              alt="群头像"
+              class="avatar-img"
+            />
             <el-icon v-else :size="24" class="avatar-placeholder-icon"><UserFilled /></el-icon>
           </div>
           <div class="avatar-actions">

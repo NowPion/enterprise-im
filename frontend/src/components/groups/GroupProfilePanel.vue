@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { ChatDotRound, Delete, Switch, Upload, UserFilled } from '@element-plus/icons-vue'
 import { extractErrorMessage } from '@/api/group'
+import { useAuthorizedMediaSrc } from '@/composables/chat/useAuthorizedMedia'
 import { useGroupPermissions } from '@/composables/groups/useGroupPermissions'
 import { formatUtcTimestamp } from '@/composables/admin/useAdminAccess'
 import { useGroupStore } from '@/stores/group'
@@ -39,6 +40,7 @@ const editAnnouncement = ref('')
 const myNickname = ref('')
 const uploadingAvatar = ref(false)
 const fileInputRef = ref<HTMLInputElement | null>(null)
+const { resolvedUrl: resolvedAvatarUrl } = useAuthorizedMediaSrc(() => props.group.avatar_url)
 
 const transferDialogVisible = ref(false)
 const transferTargetId = ref('')
@@ -216,7 +218,12 @@ async function handleDisbandGroup() {
 
       <div class="avatar-row">
         <div class="group-avatar-box">
-          <img v-if="group.avatar_url" :src="group.avatar_url" alt="群头像" class="avatar-img" />
+          <img
+            v-if="resolvedAvatarUrl"
+            :src="resolvedAvatarUrl"
+            alt="群头像"
+            class="avatar-img"
+          />
           <el-icon v-else :size="28" class="avatar-icon"><UserFilled /></el-icon>
         </div>
         <div class="avatar-controls">
