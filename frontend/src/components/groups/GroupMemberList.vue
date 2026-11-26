@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Refresh, User } from '@element-plus/icons-vue'
+import { Plus, Refresh } from '@element-plus/icons-vue'
 import { extractErrorMessage } from '@/api/group'
+import AuthorizedAvatar from '@/components/chat/AuthorizedAvatar.vue'
 import { useGroupPermissions } from '@/composables/groups/useGroupPermissions'
 import { formatUtcTimestamp } from '@/composables/admin/useAdminAccess'
 import { useGroupStore } from '@/stores/group'
@@ -160,10 +161,11 @@ async function handleRemove(member: GroupMember) {
       <el-table-column label="成员" min-width="200">
         <template #default="{ row }">
           <div class="member-cell">
-            <div class="avatar-mini">
-              <img v-if="row.avatar_url" :src="row.avatar_url" alt="" class="avatar-mini-img" />
-              <el-icon v-else :size="14"><User /></el-icon>
-            </div>
+            <AuthorizedAvatar
+              :src="row.avatar_url"
+              :name="row.nickname_in_group || row.nickname"
+              :size="32"
+            />
             <div class="member-names">
               <div class="primary-name">
                 {{ row.nickname_in_group || row.nickname }}
@@ -279,26 +281,6 @@ async function handleRemove(member: GroupMember) {
   display: flex;
   align-items: center;
   gap: 10px;
-}
-
-.avatar-mini {
-  width: 32px;
-  height: 32px;
-  border-radius: 6px;
-  background-color: #f5f6f8;
-  border: 1px solid #e5e7eb;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #6b7280;
-  overflow: hidden;
-  flex-shrink: 0;
-}
-
-.avatar-mini-img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
 }
 
 .member-names {
