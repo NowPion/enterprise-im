@@ -144,13 +144,13 @@ func TestStage4AuthLiveMySQLAndRedisIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewMySQL failed: %v", err)
 	}
-	defer func() { _ = repository.CloseMySQL(db) }()
+	t.Cleanup(func() { _ = repository.CloseMySQL(db) })
 
 	rdb, err := repository.NewRedis(cfg.Redis)
 	if err != nil {
 		t.Fatalf("NewRedis failed: %v", err)
 	}
-	defer func() { _ = repository.CloseRedis(rdb) }()
+	t.Cleanup(func() { _ = repository.CloseRedis(rdb) })
 
 	jwtCfg := config.JWTConfig{
 		Secret:     "stage4-live-integration-secret-32b!",
@@ -247,20 +247,35 @@ func TestStage4AuthLiveMySQLAndRedisIntegration(t *testing.T) {
 
 		if len(uIDs) > 0 {
 			var sessJTIs []string
-			_ = db.WithContext(ctx).Model(&model.UserSession{}).Where("user_id IN ?", uIDs).Pluck("access_jti", &sessJTIs).Error
+			if err := db.WithContext(ctx).Model(&model.UserSession{}).Where("user_id IN ?", uIDs).Pluck("access_jti", &sessJTIs).Error; err != nil {
+				t.Errorf("cleanup pluck user session jtis: %v", err)
+			}
 			jtis = append(jtis, sessJTIs...)
-			_ = db.WithContext(ctx).Where("user_id IN ?", uIDs).Delete(&model.UserSession{}).Error
-			_ = db.WithContext(ctx).Where("id IN ?", uIDs).Delete(&model.User{}).Error
+			if err := db.WithContext(ctx).Where("user_id IN ?", uIDs).Delete(&model.UserSession{}).Error; err != nil {
+				t.Errorf("cleanup delete user sessions: %v", err)
+			}
+			if err := db.WithContext(ctx).Where("id IN ?", uIDs).Delete(&model.User{}).Error; err != nil {
+				t.Errorf("cleanup delete users: %v", err)
+			}
 		}
 		if len(sIDs) > 0 {
-			_ = db.WithContext(ctx).Where("id IN ?", sIDs).Delete(&model.UserSession{}).Error
+			var sessJTIs []string
+			if err := db.WithContext(ctx).Model(&model.UserSession{}).Where("id IN ?", sIDs).Pluck("access_jti", &sessJTIs).Error; err != nil {
+				t.Errorf("cleanup pluck session jtis: %v", err)
+			}
+			jtis = append(jtis, sessJTIs...)
+			if err := db.WithContext(ctx).Where("id IN ?", sIDs).Delete(&model.UserSession{}).Error; err != nil {
+				t.Errorf("cleanup delete sessions: %v", err)
+			}
 		}
 		if len(jtis) > 0 {
 			keys := make([]string, 0, len(jtis))
 			for _, jti := range jtis {
 				keys = append(keys, repository.TokenBlacklistKey(jti))
 			}
-			_ = rdb.Del(ctx, keys...).Err()
+			if err := rdb.Del(ctx, keys...).Err(); err != nil {
+				t.Errorf("cleanup delete redis blacklist keys: %v", err)
+			}
 		}
 	})
 
