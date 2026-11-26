@@ -1,5 +1,5 @@
-import request from '@/api/request'
-import { unwrapApiEnvelope } from '@/api/group'
+import { apiDelete, apiGet, apiPatch, apiPost } from '@/api/request'
+import { compactParams } from '@/api/group'
 import type { CursorPage, GroupMember } from '@/types/group'
 import type {
   AdminAuditSummaryItem,
@@ -22,16 +22,6 @@ import type {
   UpdateAdminUserStatusResult,
 } from '@/types/admin'
 
-function compactAdminParams(params: Record<string, unknown>): Record<string, unknown> {
-  const out: Record<string, unknown> = {}
-  for (const [key, value] of Object.entries(params)) {
-    if (value !== undefined && value !== null && value !== '') {
-      out[key] = value
-    }
-  }
-  return out
-}
-
 function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -41,17 +31,15 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 export async function listAdminUsers(
   params: ListAdminUsersParams = {},
 ): Promise<CursorPage<AdminUserSummary>> {
-  const raw: unknown = await request.get<unknown>('/api/v1/admin/users', {
-    params: compactAdminParams(params as Record<string, unknown>),
+  return apiGet<CursorPage<AdminUserSummary>>('/admin/users', {
+    params: compactParams(params),
   })
-  return unwrapApiEnvelope<CursorPage<AdminUserSummary>>(raw)
 }
 
 export async function getAdminUserDetail(userId: string): Promise<AdminUserDetail> {
-  const raw: unknown = await request.get<unknown>(
-    `/api/v1/admin/users/${encodeURIComponent(userId)}`,
+  const payload = await apiGet<Record<string, unknown>>(
+    `/admin/users/${encodeURIComponent(userId)}`,
   )
-  const payload = unwrapApiEnvelope<Record<string, unknown>>(raw)
   const user = (asRecord(payload.user) ?? payload) as unknown as AdminUserSummary
   const sessions = Array.isArray(payload.sessions)
     ? (payload.sessions as AdminUserSession[])
@@ -76,11 +64,10 @@ export async function updateAdminUserStatus(
   userId: string,
   payload: UpdateAdminUserStatusPayload,
 ): Promise<UpdateAdminUserStatusResult> {
-  const raw: unknown = await request.patch<unknown>(
-    `/api/v1/admin/users/${encodeURIComponent(userId)}/status`,
+  return apiPatch<UpdateAdminUserStatusResult>(
+    `/admin/users/${encodeURIComponent(userId)}/status`,
     payload,
   )
-  return unwrapApiEnvelope<UpdateAdminUserStatusResult>(raw)
 }
 
 export async function kickAdminUser(
@@ -91,27 +78,24 @@ export async function kickAdminUser(
   if (payload.session_id) {
     body.session_id = payload.session_id
   }
-  const raw: unknown = await request.post<unknown>(
-    `/api/v1/admin/users/${encodeURIComponent(userId)}/kick`,
+  return apiPost<KickAdminUserResult>(
+    `/admin/users/${encodeURIComponent(userId)}/kick`,
     body,
   )
-  return unwrapApiEnvelope<KickAdminUserResult>(raw)
 }
 
 export async function listAdminGroups(
   params: ListAdminGroupsParams = {},
 ): Promise<CursorPage<AdminGroupSummary>> {
-  const raw: unknown = await request.get<unknown>('/api/v1/admin/groups', {
-    params: compactAdminParams(params as Record<string, unknown>),
+  return apiGet<CursorPage<AdminGroupSummary>>('/admin/groups', {
+    params: compactParams(params),
   })
-  return unwrapApiEnvelope<CursorPage<AdminGroupSummary>>(raw)
 }
 
 export async function getAdminGroupDetail(groupId: string): Promise<AdminGroupDetail> {
-  const raw: unknown = await request.get<unknown>(
-    `/api/v1/admin/groups/${encodeURIComponent(groupId)}`,
+  const payload = await apiGet<Record<string, unknown>>(
+    `/admin/groups/${encodeURIComponent(groupId)}`,
   )
-  const payload = unwrapApiEnvelope<Record<string, unknown>>(raw)
   const group = (asRecord(payload.group) ?? payload) as unknown as AdminGroupSummary
   let members: GroupMember[] = []
   let membersPage: CursorPage<GroupMember> | undefined
@@ -142,30 +126,26 @@ export async function forceDisbandAdminGroup(
   groupId: string,
   reason: string,
 ): Promise<ForceDisbandGroupResult> {
-  const raw: unknown = await request.delete<unknown>(
-    `/api/v1/admin/groups/${encodeURIComponent(groupId)}`,
+  return apiDelete<ForceDisbandGroupResult>(
+    `/admin/groups/${encodeURIComponent(groupId)}`,
     { data: { reason } },
   )
-  return unwrapApiEnvelope<ForceDisbandGroupResult>(raw)
 }
 
 export async function listAdminMessageAudit(
   params: ListAdminMessageAuditParams = {},
 ): Promise<CursorPage<AdminMessageAuditItem>> {
-  const raw: unknown = await request.get<unknown>('/api/v1/admin/messages/audit', {
-    params: compactAdminParams(params as Record<string, unknown>),
+  return apiGet<CursorPage<AdminMessageAuditItem>>('/admin/messages/audit', {
+    params: compactParams(params),
   })
-  return unwrapApiEnvelope<CursorPage<AdminMessageAuditItem>>(raw)
 }
 
 export async function getAdminMetricsOverview(): Promise<AdminMetricsOverview> {
-  const raw: unknown = await request.get<unknown>('/api/v1/admin/metrics/overview')
-  return unwrapApiEnvelope<AdminMetricsOverview>(raw)
+  return apiGet<AdminMetricsOverview>('/admin/metrics/overview')
 }
 
 export async function getAdminMetricsStreams(): Promise<AdminStreamConsumerMetric[]> {
-  const raw: unknown = await request.get<unknown>('/api/v1/admin/metrics/streams')
-  const payload = unwrapApiEnvelope<unknown>(raw)
+  const payload = await apiGet<unknown>('/admin/metrics/streams')
   if (Array.isArray(payload)) {
     return payload as AdminStreamConsumerMetric[]
   }
@@ -177,6 +157,5 @@ export async function getAdminMetricsStreams(): Promise<AdminStreamConsumerMetri
 }
 
 export async function getAdminDependenciesHealth(): Promise<AdminDependenciesHealth> {
-  const raw: unknown = await request.get<unknown>('/api/v1/admin/health/dependencies')
-  return unwrapApiEnvelope<AdminDependenciesHealth>(raw)
+  return apiGet<AdminDependenciesHealth>('/admin/health/dependencies')
 }
