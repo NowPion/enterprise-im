@@ -1,5 +1,4 @@
-import request from '@/api/request'
-import { normalizeApiError, unwrapApiResponse } from '@/api/conversation'
+import { apiGet, apiPost } from '@/api/request'
 import type {
   MarkDeliveredResult,
   MarkReadResult,
@@ -18,96 +17,61 @@ export interface FetchMessagesParams {
   limit?: number
 }
 
-export async function fetchMessages(
+export function fetchMessages(
   conversationId: string,
   params: FetchMessagesParams = {},
 ): Promise<MessagePage> {
-  try {
-    const res = await request.get(`/conversations/${encodeURIComponent(conversationId)}/messages`, { params })
-    return unwrapApiResponse<MessagePage>(res)
-  } catch (err) {
-    throw normalizeApiError(err)
-  }
+  return apiGet<MessagePage>(`/conversations/${encodeURIComponent(conversationId)}/messages`, { params })
 }
 
-export async function syncMessages(
+export function syncMessages(
   conversationId: string,
   params: { after_seq: string; limit?: number },
 ): Promise<MessageSyncResult> {
-  try {
-    const res = await request.get(`/conversations/${encodeURIComponent(conversationId)}/sync`, { params })
-    return unwrapApiResponse<MessageSyncResult>(res)
-  } catch (err) {
-    throw normalizeApiError(err)
-  }
+  return apiGet<MessageSyncResult>(`/conversations/${encodeURIComponent(conversationId)}/sync`, { params })
 }
 
-export async function sendMessageHttp(
+export function sendMessageHttp(
   conversationId: string,
   payload: SendMessagePayload,
 ): Promise<SendMessageResponse> {
-  try {
-    const res = await request.post(`/conversations/${encodeURIComponent(conversationId)}/messages`, payload)
-    return unwrapApiResponse<SendMessageResponse>(res)
-  } catch (err) {
-    throw normalizeApiError(err)
-  }
+  return apiPost<SendMessageResponse>(`/conversations/${encodeURIComponent(conversationId)}/messages`, payload)
 }
 
-export async function recallMessageHttp(
+export function recallMessageHttp(
   conversationId: string,
   msgId: string,
 ): Promise<RecallMessageResult> {
-  try {
-    const res = await request.post(
-      `/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(msgId)}/recall`,
-    )
-    return unwrapApiResponse<RecallMessageResult>(res)
-  } catch (err) {
-    throw normalizeApiError(err)
-  }
+  return apiPost<RecallMessageResult>(
+    `/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(msgId)}/recall`,
+  )
 }
 
-export async function fetchMessageReceipts(
+export function fetchMessageReceipts(
   conversationId: string,
   msgId: string,
   params: { status?: ReceiptFilterStatus; cursor?: string; limit?: number } = {},
 ): Promise<MessageReceiptList> {
-  try {
-    const res = await request.get(
-      `/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(msgId)}/receipts`,
-      { params },
-    )
-    return unwrapApiResponse<MessageReceiptList>(res)
-  } catch (err) {
-    throw normalizeApiError(err)
-  }
+  return apiGet<MessageReceiptList>(
+    `/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(msgId)}/receipts`,
+    { params },
+  )
 }
 
-export async function markConversationRead(
+export function markConversationRead(
   conversationId: string,
   lastReadSeq: string,
 ): Promise<MarkReadResult> {
-  try {
-    const res = await request.post(`/conversations/${encodeURIComponent(conversationId)}/read`, {
-      last_read_seq: lastReadSeq,
-    })
-    return unwrapApiResponse<MarkReadResult>(res)
-  } catch (err) {
-    throw normalizeApiError(err)
-  }
+  return apiPost<MarkReadResult>(`/conversations/${encodeURIComponent(conversationId)}/read`, {
+    last_read_seq: lastReadSeq,
+  })
 }
 
-export async function markConversationDelivered(
+export function markConversationDelivered(
   conversationId: string,
   lastDeliveredSeq: string,
 ): Promise<MarkDeliveredResult> {
-  try {
-    const res = await request.post(`/conversations/${encodeURIComponent(conversationId)}/delivered`, {
-      last_delivered_seq: lastDeliveredSeq,
-    })
-    return unwrapApiResponse<MarkDeliveredResult>(res)
-  } catch (err) {
-    throw normalizeApiError(err)
-  }
+  return apiPost<MarkDeliveredResult>(`/conversations/${encodeURIComponent(conversationId)}/delivered`, {
+    last_delivered_seq: lastDeliveredSeq,
+  })
 }

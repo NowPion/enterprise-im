@@ -20,6 +20,7 @@ import {
   createRetryScheduler,
   isRetryableSendError,
 } from '@/composables/chat/useMessageRetry'
+import { useAuthStore } from '@/stores/auth'
 import { useConversationStore } from '@/stores/conversation'
 import type {
   ChatMessage,
@@ -50,6 +51,20 @@ export interface SendChatMessageInput {
   content: string
   extra?: Record<string, unknown>
   local_preview_url?: string
+  client_msg_id?: string
+}
+
+function readAuthStoreUserId(): string {
+  try {
+    const authStore = useAuthStore() as unknown as {
+      user?: { id?: string | number } | null
+      currentUser?: { id?: string | number } | null
+    }
+    const rawId = authStore.user?.id ?? authStore.currentUser?.id
+    return rawId !== undefined && rawId !== null ? String(rawId) : ''
+  } catch {
+    return ''
+  }
 }
 
 const DELIVERY_RANK: Record<LocalDeliveryStatus, number> = {
@@ -108,7 +123,10 @@ export const useMessageStore = defineStore('message', () => {
   // Non-reactive internal bookkeeping for WS transport & retry timers.
   let boundWSClient: WSClient | null = null
   let wsUnsubs: Array<() => void> = []
-  let resolveCurrentUserId: () => string = () => ''
+  let customUserIdResolver: (() => string) | null = null
+  let realtimeBufferDepth = 0
+  const bufferedRealtimeEvents: Array<() => void> = []
+  const inFlightInitialLoads = new Map<string, Promise<void>>()
   const peerWatermarksByConv = new Map<string, { deliveredSeq: string; readSeq: string }>()
   const pendingRecalls = new Map<
     string,
@@ -118,6 +136,45 @@ export const useMessageStore = defineStore('message', () => {
       timer: ReturnType<typeof setTimeout>
     }
   >()
+
+  function resolveCurrentUserId(): string {
+    if (typeof customUserIdResolver === 'function') {
+      try {
+        const resolved = customUserIdResolver()
+        if (resolved) return String(resolved)
+      } catch {
+        // Fallback to authStore when custom resolver throws.
+      }
+    }
+    return readAuthStoreUserId()
+  }
+
+  function runOrBufferRealtime(task: () => void): void {
+    if (realtimeBufferDepth > 0) {
+      bufferedRealtimeEvents.push(task)
+      return
+    }
+    task()
+  }
+
+  function beginRealtimeBuffering(): void {
+    realtimeBufferDepth += 1
+  }
+
+  function flushRealtimeBuffer(): void {
+    if (realtimeBufferDepth > 0) {
+      realtimeBufferDepth -= 1
+    }
+    if (realtimeBufferDepth > 0) return
+    while (bufferedRealtimeEvents.length > 0) {
+      const task = bufferedRealtimeEvents.shift()
+      try {
+        task?.()
+      } catch {
+        // Ensure remaining buffered realtime events still flush cleanly.
+      }
+    }
+  }
 
   const retryScheduler = createRetryScheduler(
     (clientMsgId, reqId, conversationId) => {
@@ -255,12 +312,18 @@ export const useMessageStore = defineStore('message', () => {
         baseLocal,
       )
 
+      const nextDelivery: DeliveryStatus | null =
+        nextLocal === 'sent' || nextLocal === 'delivered' || nextLocal === 'read'
+          ? nextLocal
+          : (serverMsg.delivery_status ?? existing.delivery_status ?? null)
+
       const updated: ChatMessage = {
         ...existing,
         ...serverMsg,
         extra: serverMsg.extra ?? existing.extra ?? {},
         status: mergedStatus,
         recalled_at: serverMsg.recalled_at ?? existing.recalled_at,
+        delivery_status: nextDelivery,
         local_status: nextLocal,
         optimistic: false,
         error_code: undefined,
@@ -285,9 +348,15 @@ export const useMessageStore = defineStore('message', () => {
       incomingDelivery,
     )
 
+    const insertedDelivery: DeliveryStatus | null =
+      nextLocal === 'sent' || nextLocal === 'delivered' || nextLocal === 'read'
+        ? nextLocal
+        : (serverMsg.delivery_status ?? null)
+
     const insertedMsg: ChatMessage = {
       ...serverMsg,
       extra: serverMsg.extra ?? {},
+      delivery_status: insertedDelivery,
       local_status: nextLocal,
       optimistic: false,
     }
@@ -320,14 +389,17 @@ export const useMessageStore = defineStore('message', () => {
     wsConnected.value = connected
   }
 
-  function bindWSClient(client: WSClient, getCurrentUserId: () => string): void {
+  function bindWSClient(client: WSClient, getCurrentUserId?: () => string): void {
+    const nextResolver = typeof getCurrentUserId === 'function' ? getCurrentUserId : null
     if (boundWSClient === client && wsUnsubs.length > 0) {
-      resolveCurrentUserId = getCurrentUserId
+      if (nextResolver) {
+        customUserIdResolver = nextResolver
+      }
       return
     }
     unbindWSClient()
     boundWSClient = client
-    resolveCurrentUserId = getCurrentUserId
+    customUserIdResolver = nextResolver
     wsConnected.value = client.isConnected
 
     wsUnsubs = [
@@ -342,15 +414,19 @@ export const useMessageStore = defineStore('message', () => {
       }),
       client.on('msg.push', (frame: Envelope) => {
         const data = frame.data as unknown as MessagePushData | ReceiptPushData
-        if (data.push_type === 'message') {
-          handleMessagePush(data, resolveCurrentUserId())
-        } else if (data.push_type === 'receipt') {
-          handleReceiptPush(data, resolveCurrentUserId())
-        }
+        runOrBufferRealtime(() => {
+          if (data.push_type === 'message') {
+            handleMessagePush(data, resolveCurrentUserId())
+          } else if (data.push_type === 'receipt') {
+            handleReceiptPush(data, resolveCurrentUserId())
+          }
+        })
       }),
       client.on('msg.recall', (frame: Envelope) => {
         const data = frame.data as unknown as MsgRecallAckData
-        handleRecallAck(data)
+        runOrBufferRealtime(() => {
+          handleRecallAck(data)
+        })
         const pending = pendingRecalls.get(frame.req_id)
         if (pending) {
           clearTimeout(pending.timer)
@@ -364,7 +440,10 @@ export const useMessageStore = defineStore('message', () => {
         conversationStore.applyPeerPresence(data.user_id, data.online, data.last_online_at)
       }),
       client.on('system.notice', (frame: Envelope) => {
-        handleSystemNotice(frame.data as unknown as SystemNoticeData, resolveCurrentUserId())
+        const data = frame.data as unknown as SystemNoticeData
+        runOrBufferRealtime(() => {
+          handleSystemNotice(data, resolveCurrentUserId())
+        })
       }),
       client.on('error', (err) => {
         if (err.kind === 'frame') {
@@ -389,6 +468,9 @@ export const useMessageStore = defineStore('message', () => {
     }
     wsUnsubs = []
     boundWSClient = null
+    customUserIdResolver = null
+    realtimeBufferDepth = 0
+    bufferedRealtimeEvents.length = 0
     wsConnected.value = false
     for (const pending of pendingRecalls.values()) {
       clearTimeout(pending.timer)
@@ -396,38 +478,55 @@ export const useMessageStore = defineStore('message', () => {
     pendingRecalls.clear()
   }
 
-  async function loadInitialMessages(conversationId: string, currentUserId: string): Promise<void> {
+  async function loadInitialMessages(
+    conversationId: string,
+    currentUserId: string = resolveCurrentUserId(),
+  ): Promise<void> {
+    const existing = inFlightInitialLoads.get(conversationId)
+    if (existing) return existing
+
+    const uid = currentUserId || resolveCurrentUserId()
     const pagination = ensurePagination(conversationId)
     pagination.loadingOlder = true
-    try {
-      const page = await fetchMessages(conversationId, { limit: 30 })
-      for (const msg of page.items) {
-        upsertServerMessage(conversationId, msg, currentUserId)
-      }
-      pagination.hasMoreOlder = page.has_more
-      pagination.oldestSeq = getOldestCommittedSeq(conversationId)
-      pagination.initialized = true
+    const run = (async () => {
+      try {
+        const page = await fetchMessages(conversationId, { limit: 30 })
+        for (const msg of page.items) {
+          upsertServerMessage(conversationId, msg, uid)
+        }
+        pagination.hasMoreOlder = page.has_more
+        pagination.oldestSeq = getOldestCommittedSeq(conversationId)
+        pagination.initialized = true
 
-      const conversationStore = useConversationStore()
-      const highestSeq = getHighestCommittedSeq(conversationId)
-      const conv = conversationStore.itemsById[conversationId]
-      if (isPositiveSeq(highestSeq) && conv) {
-        if (compareSeq(highestSeq, conv.last_delivered_seq) > 0) {
-          void markDelivered(conversationId, minSeq(highestSeq, maxSeq(conv.last_seq, highestSeq)))
+        const conversationStore = useConversationStore()
+        const highestSeq = getHighestCommittedSeq(conversationId)
+        const conv = conversationStore.itemsById[conversationId]
+        if (isPositiveSeq(highestSeq) && conv) {
+          if (compareSeq(highestSeq, conv.last_delivered_seq) > 0) {
+            void markDelivered(conversationId, minSeq(highestSeq, maxSeq(conv.last_seq, highestSeq)))
+          }
+          if (
+            conversationStore.activeConversationId === conversationId &&
+            conversationStore.isChatVisible
+          ) {
+            await markRead(conversationId, minSeq(highestSeq, maxSeq(conv.last_seq, highestSeq)))
+          }
         }
-        if (
-          conversationStore.activeConversationId === conversationId &&
-          conversationStore.isChatVisible
-        ) {
-          await markRead(conversationId, minSeq(highestSeq, maxSeq(conv.last_seq, highestSeq)))
-        }
+      } finally {
+        pagination.loadingOlder = false
+        inFlightInitialLoads.delete(conversationId)
       }
-    } finally {
-      pagination.loadingOlder = false
-    }
+    })()
+
+    inFlightInitialLoads.set(conversationId, run)
+    return run
   }
 
-  async function loadOlderMessages(conversationId: string, currentUserId: string): Promise<boolean> {
+  async function loadOlderMessages(
+    conversationId: string,
+    currentUserId: string = resolveCurrentUserId(),
+  ): Promise<boolean> {
+    const uid = currentUserId || resolveCurrentUserId()
     const pagination = ensurePagination(conversationId)
     if (pagination.loadingOlder || !pagination.hasMoreOlder) return false
     const beforeSeq = pagination.oldestSeq ?? getOldestCommittedSeq(conversationId)
@@ -443,7 +542,7 @@ export const useMessageStore = defineStore('message', () => {
         limit: 30,
       })
       for (const msg of page.items) {
-        upsertServerMessage(conversationId, msg, currentUserId)
+        upsertServerMessage(conversationId, msg, uid)
       }
       pagination.hasMoreOlder = page.has_more
       pagination.oldestSeq = getOldestCommittedSeq(conversationId)
@@ -455,22 +554,35 @@ export const useMessageStore = defineStore('message', () => {
 
   async function syncConversation(
     conversationId: string,
-    currentUserId: string,
+    currentUserId: string = resolveCurrentUserId(),
     explicitAfterSeq?: string,
   ): Promise<number> {
+    const uid = currentUserId || resolveCurrentUserId()
+    const pendingInitial = inFlightInitialLoads.get(conversationId)
+    if (pendingInitial) {
+      try {
+        await pendingInitial
+      } catch {
+        // Proceed with incremental sync if initial load failed.
+      }
+    }
     if (syncingByConversation.value[conversationId]) return 0
     syncingByConversation.value[conversationId] = true
 
     const conversationStore = useConversationStore()
-    let cursorSeq = explicitAfterSeq ?? getHighestCommittedSeq(conversationId)
+    const pagination = ensurePagination(conversationId)
+    const hadInitialized = pagination.initialized
+    const initialCursor = explicitAfterSeq ?? getHighestCommittedSeq(conversationId)
+    let cursorSeq = initialCursor
     let syncedCount = 0
     let highestSyncedSeq = cursorSeq
+    let reachedEnd = true
 
     try {
       for (let pageIndex = 0; pageIndex < 20; pageIndex += 1) {
         const res = await syncMessages(conversationId, { after_seq: cursorSeq, limit: 100 })
         for (const msg of res.items) {
-          const { inserted } = upsertServerMessage(conversationId, msg, currentUserId)
+          const { inserted } = upsertServerMessage(conversationId, msg, uid)
           if (msg.msg_type === 'recall' && typeof msg.extra?.recalled_msg_id === 'string') {
             applyRecallInPlace(
               conversationId,
@@ -488,8 +600,10 @@ export const useMessageStore = defineStore('message', () => {
           cursorSeq = res.to_seq
         }
         if (!res.has_more || res.items.length === 0) {
+          reachedEnd = true
           break
         }
+        reachedEnd = false
       }
 
       const conv = conversationStore.itemsById[conversationId]
@@ -498,7 +612,7 @@ export const useMessageStore = defineStore('message', () => {
           const list = messagesByConversation.value[conversationId] ?? []
           const latestMsg = list.find((m) => m.seq === highestSyncedSeq)
           if (latestMsg) {
-            conversationStore.applyIncomingMessage(latestMsg, currentUserId, { isReplay: true })
+            conversationStore.applyIncomingMessage(latestMsg, uid, { isReplay: true })
           }
         }
         if (compareSeq(highestSyncedSeq, conv.last_delivered_seq) > 0) {
@@ -512,11 +626,15 @@ export const useMessageStore = defineStore('message', () => {
         }
       }
 
-      const pagination = ensurePagination(conversationId)
       if (!pagination.oldestSeq) {
         pagination.oldestSeq = getOldestCommittedSeq(conversationId)
       }
-      pagination.initialized = true
+      if (hadInitialized || (!isPositiveSeq(initialCursor) && reachedEnd)) {
+        pagination.initialized = true
+        if (!hadInitialized && !isPositiveSeq(initialCursor) && reachedEnd) {
+          pagination.hasMoreOlder = false
+        }
+      }
       return syncedCount
     } finally {
       syncingByConversation.value[conversationId] = false
@@ -526,24 +644,41 @@ export const useMessageStore = defineStore('message', () => {
   async function sendMessage(
     conversationId: string,
     input: SendChatMessageInput,
-    currentUserId: string,
+    currentUserId: string = resolveCurrentUserId(),
   ): Promise<ChatMessage> {
-    const clientMsgId = generateClientMsgId()
+    if (!conversationId || typeof conversationId !== 'string') {
+      throw new Error('缺少会话 ID')
+    }
+    if (!input || typeof input !== 'object') {
+      throw new Error('消息输入参数不能为空')
+    }
+
+    const uid = currentUserId || resolveCurrentUserId()
+    const clientMsgId =
+      typeof input.client_msg_id === 'string' && input.client_msg_id.trim()
+        ? input.client_msg_id.trim()
+        : generateClientMsgId()
     const reqId = createReqId()
-    const extra = input.extra ?? {}
+    const msgType = input.msg_type ?? 'text'
+    const content = typeof input.content === 'string' ? input.content : ''
+    const extra =
+      input.extra && typeof input.extra === 'object' && !Array.isArray(input.extra)
+        ? { ...input.extra }
+        : {}
+
     const optimisticMsg: ChatMessage = {
       msg_id: '',
       client_msg_id: clientMsgId,
       conversation_id: conversationId,
       seq: '0',
-      sender_id: currentUserId,
-      msg_type: input.msg_type,
-      content: input.content,
+      sender_id: uid,
+      msg_type: msgType,
+      content,
       extra,
       status: 'normal',
       created_at: new Date().toISOString(),
       recalled_at: null,
-      delivery_status: null,
+      delivery_status: 'sending' as unknown as DeliveryStatus,
       local_status: 'sending',
       req_id: reqId,
       optimistic: true,
@@ -554,29 +689,35 @@ export const useMessageStore = defineStore('message', () => {
     messagesByConversation.value[conversationId] = sortMessages([...currentList, optimisticMsg])
 
     if (boundWSClient) {
-      boundWSClient.enqueue(
-        {
-          conversation_id: conversationId,
-          client_msg_id: clientMsgId,
-          msg_type: input.msg_type,
-          content: input.content,
-          extra: extra as Record<string, never>,
-        },
-        reqId,
-      )
-      return optimisticMsg
+      try {
+        boundWSClient.enqueue(
+          {
+            conversation_id: conversationId,
+            client_msg_id: clientMsgId,
+            msg_type: msgType,
+            content,
+            extra: extra as Record<string, never>,
+          },
+          reqId,
+        )
+        return optimisticMsg
+      } catch (err) {
+        const messageText = err instanceof Error ? err.message : '消息入队失败'
+        markLocalMessageFailed(conversationId, clientMsgId, -1, messageText, true)
+        throw err
+      }
     }
 
     try {
       const res = await sendMessageHttp(conversationId, {
         client_msg_id: clientMsgId,
-        msg_type: input.msg_type,
-        content: input.content,
+        msg_type: msgType,
+        content,
         extra,
       })
-      const { message } = upsertServerMessage(conversationId, res.message, currentUserId)
+      const { message } = upsertServerMessage(conversationId, res.message, uid)
       const conversationStore = useConversationStore()
-      conversationStore.applyIncomingMessage(res.message, currentUserId, { isReplay: false })
+      conversationStore.applyIncomingMessage(res.message, uid, { isReplay: false })
       return message
     } catch (err) {
       const code =
@@ -603,6 +744,7 @@ export const useMessageStore = defineStore('message', () => {
     const nextList = [...list]
     nextList[idx] = {
       ...nextList[idx],
+      delivery_status: 'failed' as unknown as DeliveryStatus,
       local_status: 'failed',
       error_code: errorCode,
       error_message: errorMessage,
@@ -611,11 +753,44 @@ export const useMessageStore = defineStore('message', () => {
     messagesByConversation.value[conversationId] = nextList
   }
 
+  function resendPendingMessages(): number {
+    if (!boundWSClient) return 0
+    let resentCount = 0
+    for (const [conversationId, list] of Object.entries(messagesByConversation.value)) {
+      for (const msg of list) {
+        if (msg.local_status !== 'sending') continue
+        if (msg.req_id && boundWSClient.hasPending(msg.req_id)) {
+          continue
+        }
+        retryScheduler.cancel(msg.client_msg_id)
+        const reqId = msg.req_id || createReqId()
+        msg.req_id = reqId
+        try {
+          boundWSClient.enqueue(
+            {
+              conversation_id: conversationId,
+              client_msg_id: msg.client_msg_id,
+              msg_type: msg.msg_type,
+              content: msg.content,
+              extra: (msg.extra ?? {}) as Record<string, never>,
+            },
+            reqId,
+          )
+          resentCount += 1
+        } catch {
+          // Leave in sending state if account context is temporarily unavailable.
+        }
+      }
+    }
+    return resentCount
+  }
+
   async function retryMessage(
     conversationId: string,
     clientMsgId: string,
-    currentUserId: string,
+    currentUserId: string = resolveCurrentUserId(),
   ): Promise<void> {
+    const uid = currentUserId || resolveCurrentUserId()
     const list = messagesByConversation.value[conversationId]
     if (!list) return
     const idx = list.findIndex((m) => m.client_msg_id === clientMsgId)
@@ -633,6 +808,7 @@ export const useMessageStore = defineStore('message', () => {
       : createReqId()
     nextList[idx] = {
       ...existing,
+      delivery_status: 'sending' as unknown as DeliveryStatus,
       local_status: 'sending',
       req_id: nextReqId,
       error_code: undefined,
@@ -672,9 +848,9 @@ export const useMessageStore = defineStore('message', () => {
         content: existing.content,
         extra: existing.extra ?? {},
       })
-      upsertServerMessage(conversationId, res.message, currentUserId)
+      upsertServerMessage(conversationId, res.message, uid)
       const conversationStore = useConversationStore()
-      conversationStore.applyIncomingMessage(res.message, currentUserId, { isReplay: false })
+      conversationStore.applyIncomingMessage(res.message, uid, { isReplay: false })
     } catch (err) {
       const code =
         typeof err === 'object' && err !== null && 'code' in err
@@ -694,8 +870,9 @@ export const useMessageStore = defineStore('message', () => {
   async function recallMessage(
     conversationId: string,
     msgId: string,
-    currentUserId: string,
+    currentUserId: string = resolveCurrentUserId(),
   ): Promise<void> {
+    const uid = currentUserId || resolveCurrentUserId()
     if (boundWSClient?.isConnected) {
       const reqId = boundWSClient.sendRecall({ conversation_id: conversationId, msg_id: msgId })
       if (reqId) {
@@ -718,10 +895,10 @@ export const useMessageStore = defineStore('message', () => {
     }
 
     const res = await recallMessageHttp(conversationId, msgId)
-    upsertServerMessage(conversationId, res.recalled_message, currentUserId)
-    upsertServerMessage(conversationId, res.recall_message, currentUserId)
+    upsertServerMessage(conversationId, res.recalled_message, uid)
+    upsertServerMessage(conversationId, res.recall_message, uid)
     const conversationStore = useConversationStore()
-    conversationStore.applyIncomingMessage(res.recall_message, currentUserId, { isReplay: true })
+    conversationStore.applyIncomingMessage(res.recall_message, uid, { isReplay: true })
   }
 
   async function markRead(conversationId: string, requestedSeq?: string): Promise<void> {
@@ -809,7 +986,11 @@ export const useMessageStore = defineStore('message', () => {
     }
   }
 
-  function handleMessageAck(ack: MsgAckData, currentUserId: string): void {
+  function handleMessageAck(
+    ack: MsgAckData,
+    currentUserId: string = resolveCurrentUserId(),
+  ): void {
+    const uid = currentUserId || resolveCurrentUserId()
     const list = messagesByConversation.value[ack.conversation_id] ?? []
     const existing = list.find((m) => m.client_msg_id === ack.client_msg_id)
 
@@ -821,7 +1002,7 @@ export const useMessageStore = defineStore('message', () => {
           client_msg_id: ack.client_msg_id,
           conversation_id: ack.conversation_id,
           seq: ack.seq,
-          sender_id: existing.sender_id || currentUserId,
+          sender_id: existing.sender_id || uid,
           msg_type: existing.msg_type,
           content: existing.content,
           extra: existing.extra,
@@ -835,7 +1016,7 @@ export const useMessageStore = defineStore('message', () => {
           client_msg_id: ack.client_msg_id,
           conversation_id: ack.conversation_id,
           seq: ack.seq,
-          sender_id: currentUserId,
+          sender_id: uid,
           msg_type: 'text',
           content: '',
           extra: {},
@@ -845,12 +1026,16 @@ export const useMessageStore = defineStore('message', () => {
           delivery_status: ack.delivery_status,
         }
 
-    const { message } = upsertServerMessage(ack.conversation_id, mergedMessage, currentUserId)
+    const { message } = upsertServerMessage(ack.conversation_id, mergedMessage, uid)
     const conversationStore = useConversationStore()
-    conversationStore.applyIncomingMessage(message, currentUserId, { isReplay: true })
+    conversationStore.applyIncomingMessage(message, uid, { isReplay: true })
   }
 
-  function handleMessagePush(push: MessagePushData, currentUserId: string): void {
+  function handleMessagePush(
+    push: MessagePushData,
+    currentUserId: string = resolveCurrentUserId(),
+  ): void {
+    const uid = currentUserId || resolveCurrentUserId()
     const serverMsg: Message = {
       ...push.message,
       delivery_status: push.message.delivery_status ?? push.delivery_status,
@@ -858,7 +1043,7 @@ export const useMessageStore = defineStore('message', () => {
     const { inserted, message } = upsertServerMessage(
       serverMsg.conversation_id,
       serverMsg,
-      currentUserId,
+      uid,
     )
 
     if (serverMsg.msg_type === 'recall' && typeof serverMsg.extra?.recalled_msg_id === 'string') {
@@ -872,10 +1057,10 @@ export const useMessageStore = defineStore('message', () => {
     }
 
     const conversationStore = useConversationStore()
-    conversationStore.applyIncomingMessage(serverMsg, currentUserId, { isReplay: !inserted })
+    conversationStore.applyIncomingMessage(serverMsg, uid, { isReplay: !inserted })
 
     // Send delivered_ack once persisted into local Pinia store.
-    if (currentUserId && serverMsg.sender_id !== currentUserId && isPositiveSeq(serverMsg.seq)) {
+    if (uid && serverMsg.sender_id !== uid && isPositiveSeq(serverMsg.seq)) {
       if (boundWSClient?.isConnected) {
         boundWSClient.sendDeliveredAck({
           msg_id: serverMsg.msg_id,
@@ -897,11 +1082,15 @@ export const useMessageStore = defineStore('message', () => {
     void message
   }
 
-  function handleReceiptPush(push: ReceiptPushData, currentUserId: string): void {
+  function handleReceiptPush(
+    push: ReceiptPushData,
+    currentUserId: string = resolveCurrentUserId(),
+  ): void {
+    const uid = currentUserId || resolveCurrentUserId()
     const conversationStore = useConversationStore()
 
     // Same-account multi-device read/delivered sync.
-    if (currentUserId && push.user_id === currentUserId) {
+    if (uid && push.user_id === uid) {
       if (push.delivery_status === 'read') {
         conversationStore.applyReadWatermark(
           push.conversation_id,
@@ -932,7 +1121,7 @@ export const useMessageStore = defineStore('message', () => {
 
     let changed = false
     const updatedList = list.map((msg) => {
-      if (currentUserId && msg.sender_id !== currentUserId) return msg
+      if (uid && msg.sender_id !== uid) return msg
 
       let targetStatus: DeliveryStatus | null = null
       if (push.msg_id && msg.msg_id === push.msg_id) {
@@ -971,7 +1160,11 @@ export const useMessageStore = defineStore('message', () => {
     conversationStore.applyConversationPreviewOnRecall(ack.conversation_id, ack.recalled_msg_id)
   }
 
-  function handleSystemNotice(notice: SystemNoticeData, currentUserId: string): void {
+  function handleSystemNotice(
+    notice: SystemNoticeData,
+    currentUserId: string = resolveCurrentUserId(),
+  ): void {
+    const uid = currentUserId || resolveCurrentUserId()
     const conversationStore = useConversationStore()
     if (notice.event === 'message.recalled' && notice.conversation_id) {
       const recalledMsgId =
@@ -985,7 +1178,7 @@ export const useMessageStore = defineStore('message', () => {
         conversationStore.applyConversationPreviewOnRecall(notice.conversation_id, recalledMsgId)
       }
     }
-    conversationStore.applySystemNotice(notice, currentUserId)
+    conversationStore.applySystemNotice(notice, uid)
   }
 
   function handleWsError(err: WSErrorData, _currentUserId: string): void {
@@ -1039,6 +1232,7 @@ export const useMessageStore = defineStore('message', () => {
     receiptsModalData.value = null
     receiptsLoading.value = false
     peerWatermarksByConv.clear()
+    inFlightInitialLoads.clear()
   }
 
   return {
@@ -1056,6 +1250,9 @@ export const useMessageStore = defineStore('message', () => {
     setWsConnected,
     bindWSClient,
     unbindWSClient,
+    beginRealtimeBuffering,
+    flushRealtimeBuffer,
+    resendPendingMessages,
     loadInitialMessages,
     loadOlderMessages,
     syncConversation,

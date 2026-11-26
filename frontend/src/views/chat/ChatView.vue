@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ChatDotRound, Setting } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
@@ -128,6 +128,11 @@ onMounted(async () => {
       ElMessage.error(err instanceof Error ? err.message : '加载会话列表失败')
     }
   }
+})
+
+onUnmounted(() => {
+  conversationStore.setActiveConversation(null)
+  conversationStore.setChatVisible(false)
 })
 
 function handleSelectConversation(convId: string) {

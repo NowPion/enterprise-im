@@ -172,7 +172,15 @@ export class WSClient {
   }
 
   updateOptions(partial: Partial<Pick<WSClientOptions, 'getAccessToken' | 'getAccountId' | 'getLastSeq'>>) {
-    this.dynamicOptions = { ...this.dynamicOptions, ...partial }
+    if (partial.getAccessToken !== undefined) {
+      this.dynamicOptions.getAccessToken = partial.getAccessToken
+    }
+    if (partial.getAccountId !== undefined) {
+      this.dynamicOptions.getAccountId = partial.getAccountId
+    }
+    if (partial.getLastSeq !== undefined) {
+      this.dynamicOptions.getLastSeq = partial.getLastSeq
+    }
   }
 
   private resolveAccessToken(): string {
@@ -564,6 +572,15 @@ export class WSClient {
 }
 
 let sharedWSClient: WSClient | null = null
+const sharedResetListeners = new Set<() => void>()
+let resettingSharedClient = false
+
+export function onSharedWSClientReset(listener: () => void): () => void {
+  sharedResetListeners.add(listener)
+  return () => {
+    sharedResetListeners.delete(listener)
+  }
+}
 
 export function createSharedWSClient(options: WSClientOptions): WSClient {
   if (!sharedWSClient) {
@@ -583,8 +600,22 @@ export function getSharedWSClient(): WSClient | null {
 }
 
 export function resetSharedWSClient(): void {
-  if (sharedWSClient) {
-    sharedWSClient.disconnect()
+  if (resettingSharedClient) return
+  resettingSharedClient = true
+  try {
+    const current = sharedWSClient
     sharedWSClient = null
+    if (current) {
+      current.disconnect()
+    }
+    for (const listener of Array.from(sharedResetListeners)) {
+      try {
+        listener()
+      } catch {
+        // Isolate listener errors so shared reset always completes.
+      }
+    }
+  } finally {
+    resettingSharedClient = false
   }
 }
