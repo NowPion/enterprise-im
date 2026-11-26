@@ -79,3 +79,6 @@ upload:
   max_voice_duration_ms: 300000 # 5 minutes
   thumbnail_max_dim: 320
   download_url_ttl: 15m
+
+chat:
+  recall_window: 2m

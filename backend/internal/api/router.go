@@ -26,6 +26,13 @@ type Stage4Dependencies struct {
 	FriendController  *controller.FriendController
 }
 
+// Stage6ChatDependencies holds the shared JWT authentication middleware and Stage 6 chat controllers.
+type Stage6ChatDependencies struct {
+	JWTAuth                gin.HandlerFunc
+	ConversationController *controller.ConversationController
+	MessageController      *controller.MessageController
+}
+
 // NewRouter builds the Gin engine with global middlewares and /healthz route.
 // Stage 4 routes can be mounted via RegisterStage4Routes, NewRouterWithStage4, or per-module Register*Routes helpers.
 func NewRouter(cfg *config.Config, log *slog.Logger, healthCtrl *controller.HealthController) *gin.Engine {
@@ -104,4 +111,13 @@ func NewRouterWithStage4(
 	r := NewRouter(cfg, log, healthCtrl)
 	RegisterStage4Routes(r, deps)
 	return r
+}
+
+// RegisterStage6ChatRoutes mounts Stage 6 conversation and message routes onto r
+// using the shared JWT authentication middleware.
+func RegisterStage6ChatRoutes(r gin.IRouter, deps Stage6ChatDependencies) {
+	if r == nil {
+		return
+	}
+	RegisterConversationRoutes(r, deps.JWTAuth, deps.ConversationController, deps.MessageController)
 }

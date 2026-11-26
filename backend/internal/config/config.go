@@ -24,6 +24,7 @@ type Config struct {
 	Health    HealthConfig    `mapstructure:"health"`
 	WS        WSConfig        `mapstructure:"ws"`
 	Upload    UploadConfig    `mapstructure:"upload"`
+	Chat      ChatConfig      `mapstructure:"chat"`
 }
 
 // UploadConfig holds local media storage paths, size/dimension/duration limits, and signed download TTL.
@@ -51,6 +52,11 @@ func (u UploadConfig) MaxPossibleBytes() int64 {
 		}
 	}
 	return maxBytes
+}
+
+// ChatConfig holds chat messaging and recall policy settings.
+type ChatConfig struct {
+	RecallWindow time.Duration `mapstructure:"recall_window"`
 }
 
 type WSConfig struct {
@@ -291,28 +297,32 @@ func (c *Config) Validate() error {
 	if c.Upload.DownloadURLTTL <= 0 {
 		return errors.New("upload.download_url_ttl must be positive")
 	}
+	if c.Chat.RecallWindow <= 0 {
+		return errors.New("chat.recall_window must be positive")
+	}
 	return nil
 }
 
 // RedactedSummary returns non-sensitive runtime metadata safe for startup logs.
 func (c *Config) RedactedSummary() map[string]any {
 	return map[string]any{
-		"app_name":          c.App.Name,
-		"app_env":           c.App.Env,
-		"node_id":           c.App.NodeID,
-		"server_addr":       c.Server.Addr,
-		"shutdown_timeout":  c.Server.ShutdownTimeout.String(),
-		"log_level":         c.Log.Level,
-		"log_format":        c.Log.Format,
-		"mysql_host":        c.MySQL.Host,
-		"mysql_port":        c.MySQL.Port,
-		"mysql_database":    c.MySQL.Database,
-		"mysql_password":    "[REDACTED]",
-		"redis_addr":        c.Redis.Addr,
-		"redis_db":          c.Redis.DB,
-		"redis_password":    "[REDACTED]",
-		"snowflake_node_id": c.Snowflake.NodeID,
-		"allowed_origins":   c.CORS.AllowedOrigins,
+		"app_name":           c.App.Name,
+		"app_env":            c.App.Env,
+		"node_id":            c.App.NodeID,
+		"server_addr":        c.Server.Addr,
+		"shutdown_timeout":   c.Server.ShutdownTimeout.String(),
+		"log_level":          c.Log.Level,
+		"log_format":         c.Log.Format,
+		"mysql_host":         c.MySQL.Host,
+		"mysql_port":         c.MySQL.Port,
+		"mysql_database":     c.MySQL.Database,
+		"mysql_password":     "[REDACTED]",
+		"redis_addr":         c.Redis.Addr,
+		"redis_db":           c.Redis.DB,
+		"redis_password":     "[REDACTED]",
+		"snowflake_node_id":  c.Snowflake.NodeID,
+		"allowed_origins":    c.CORS.AllowedOrigins,
+		"chat_recall_window": c.Chat.RecallWindow.String(),
 	}
 }
 
@@ -372,58 +382,60 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("upload.max_voice_duration_ms", 300000)
 	v.SetDefault("upload.thumbnail_max_dim", 320)
 	v.SetDefault("upload.download_url_ttl", "15m")
+	v.SetDefault("chat.recall_window", "2m")
 }
 
 func bindEnvs(v *viper.Viper) {
 	bindings := map[string][]string{
-		"ws.heartbeat_timeout":     {"IM_WS_HEARTBEAT_TIMEOUT", "WS_HEARTBEAT_TIMEOUT"},
-		"ws.write_timeout":         {"IM_WS_WRITE_TIMEOUT", "WS_WRITE_TIMEOUT"},
-		"ws.max_frame_bytes":       {"IM_WS_MAX_FRAME_BYTES", "WS_MAX_FRAME_BYTES"},
-		"app.name":                 {"IM_APP_NAME", "APP_NAME"},
-		"app.env":                  {"IM_APP_ENV", "APP_ENV"},
-		"app.node_id":              {"IM_APP_NODE_ID", "APP_NODE_ID"},
-		"server.addr":              {"IM_SERVER_ADDR", "SERVER_ADDR"},
-		"server.read_timeout":      {"IM_SERVER_READ_TIMEOUT", "SERVER_READ_TIMEOUT"},
-		"server.write_timeout":     {"IM_SERVER_WRITE_TIMEOUT", "SERVER_WRITE_TIMEOUT"},
-		"server.idle_timeout":      {"IM_SERVER_IDLE_TIMEOUT", "SERVER_IDLE_TIMEOUT"},
-		"server.shutdown_timeout":  {"IM_SERVER_SHUTDOWN_TIMEOUT", "SERVER_SHUTDOWN_TIMEOUT"},
-		"server.max_body_bytes":    {"IM_SERVER_MAX_BODY_BYTES", "SERVER_MAX_BODY_BYTES"},
-		"cors.allowed_origins":     {"IM_CORS_ALLOWED_ORIGINS", "CORS_ALLOWED_ORIGINS"},
-		"log.level":                {"IM_LOG_LEVEL", "LOG_LEVEL"},
-		"log.format":               {"IM_LOG_FORMAT", "LOG_FORMAT"},
-		"mysql.host":               {"IM_MYSQL_HOST", "MYSQL_HOST"},
-		"mysql.port":               {"IM_MYSQL_PORT", "MYSQL_PORT"},
-		"mysql.user":               {"IM_MYSQL_USER", "MYSQL_USER"},
-		"mysql.password":           {"IM_MYSQL_PASSWORD", "MYSQL_PASSWORD"},
-		"mysql.database":           {"IM_MYSQL_DATABASE", "MYSQL_DATABASE"},
-		"mysql.charset":            {"IM_MYSQL_CHARSET", "MYSQL_CHARSET"},
-		"mysql.max_open_conns":     {"IM_MYSQL_MAX_OPEN_CONNS", "MYSQL_MAX_OPEN_CONNS"},
-		"mysql.max_idle_conns":     {"IM_MYSQL_MAX_IDLE_CONNS", "MYSQL_MAX_IDLE_CONNS"},
-		"mysql.conn_max_lifetime":  {"IM_MYSQL_CONN_MAX_LIFETIME", "MYSQL_CONN_MAX_LIFETIME"},
-		"mysql.conn_max_idle_time": {"IM_MYSQL_CONN_MAX_IDLE_TIME", "MYSQL_CONN_MAX_IDLE_TIME"},
-		"mysql.dial_timeout":       {"IM_MYSQL_DIAL_TIMEOUT", "MYSQL_DIAL_TIMEOUT"},
-		"redis.addr":               {"IM_REDIS_ADDR", "REDIS_ADDR"},
-		"redis.password":           {"IM_REDIS_PASSWORD", "REDIS_PASSWORD"},
-		"redis.db":                 {"IM_REDIS_DB", "REDIS_DB"},
-		"redis.pool_size":          {"IM_REDIS_POOL_SIZE", "REDIS_POOL_SIZE"},
-		"redis.min_idle_conns":     {"IM_REDIS_MIN_IDLE_CONNS", "REDIS_MIN_IDLE_CONNS"},
-		"redis.dial_timeout":       {"IM_REDIS_DIAL_TIMEOUT", "REDIS_DIAL_TIMEOUT"},
-		"redis.read_timeout":       {"IM_REDIS_READ_TIMEOUT", "REDIS_READ_TIMEOUT"},
-		"redis.write_timeout":      {"IM_REDIS_WRITE_TIMEOUT", "REDIS_WRITE_TIMEOUT"},
-		"snowflake.node_id":           {"IM_SNOWFLAKE_NODE_ID", "SNOWFLAKE_NODE_ID"},
-		"health.probe_timeout":        {"IM_HEALTH_PROBE_TIMEOUT", "HEALTH_PROBE_TIMEOUT"},
-		"upload.dir":                  {"IM_UPLOAD_DIR", "UPLOAD_DIR"},
-		"upload.temp_dir":             {"IM_UPLOAD_TEMP_DIR", "UPLOAD_TEMP_DIR"},
-		"upload.max_image_bytes":      {"IM_UPLOAD_MAX_IMAGE_BYTES", "UPLOAD_MAX_IMAGE_BYTES"},
-		"upload.max_file_bytes":       {"IM_UPLOAD_MAX_FILE_BYTES", "UPLOAD_MAX_FILE_BYTES"},
-		"upload.max_voice_bytes":      {"IM_UPLOAD_MAX_VOICE_BYTES", "UPLOAD_MAX_VOICE_BYTES"},
-		"upload.max_avatar_bytes":     {"IM_UPLOAD_MAX_AVATAR_BYTES", "UPLOAD_MAX_AVATAR_BYTES"},
-		"upload.max_image_width":      {"IM_UPLOAD_MAX_IMAGE_WIDTH", "UPLOAD_MAX_IMAGE_WIDTH"},
-		"upload.max_image_height":     {"IM_UPLOAD_MAX_IMAGE_HEIGHT", "UPLOAD_MAX_IMAGE_HEIGHT"},
-		"upload.max_image_pixels":     {"IM_UPLOAD_MAX_IMAGE_PIXELS", "UPLOAD_MAX_IMAGE_PIXELS"},
+		"chat.recall_window":           {"IM_CHAT_RECALL_WINDOW", "CHAT_RECALL_WINDOW"},
+		"ws.heartbeat_timeout":         {"IM_WS_HEARTBEAT_TIMEOUT", "WS_HEARTBEAT_TIMEOUT"},
+		"ws.write_timeout":             {"IM_WS_WRITE_TIMEOUT", "WS_WRITE_TIMEOUT"},
+		"ws.max_frame_bytes":           {"IM_WS_MAX_FRAME_BYTES", "WS_MAX_FRAME_BYTES"},
+		"app.name":                     {"IM_APP_NAME", "APP_NAME"},
+		"app.env":                      {"IM_APP_ENV", "APP_ENV"},
+		"app.node_id":                  {"IM_APP_NODE_ID", "APP_NODE_ID"},
+		"server.addr":                  {"IM_SERVER_ADDR", "SERVER_ADDR"},
+		"server.read_timeout":          {"IM_SERVER_READ_TIMEOUT", "SERVER_READ_TIMEOUT"},
+		"server.write_timeout":         {"IM_SERVER_WRITE_TIMEOUT", "SERVER_WRITE_TIMEOUT"},
+		"server.idle_timeout":          {"IM_SERVER_IDLE_TIMEOUT", "SERVER_IDLE_TIMEOUT"},
+		"server.shutdown_timeout":      {"IM_SERVER_SHUTDOWN_TIMEOUT", "SERVER_SHUTDOWN_TIMEOUT"},
+		"server.max_body_bytes":        {"IM_SERVER_MAX_BODY_BYTES", "SERVER_MAX_BODY_BYTES"},
+		"cors.allowed_origins":         {"IM_CORS_ALLOWED_ORIGINS", "CORS_ALLOWED_ORIGINS"},
+		"log.level":                    {"IM_LOG_LEVEL", "LOG_LEVEL"},
+		"log.format":                   {"IM_LOG_FORMAT", "LOG_FORMAT"},
+		"mysql.host":                   {"IM_MYSQL_HOST", "MYSQL_HOST"},
+		"mysql.port":                   {"IM_MYSQL_PORT", "MYSQL_PORT"},
+		"mysql.user":                   {"IM_MYSQL_USER", "MYSQL_USER"},
+		"mysql.password":               {"IM_MYSQL_PASSWORD", "MYSQL_PASSWORD"},
+		"mysql.database":               {"IM_MYSQL_DATABASE", "MYSQL_DATABASE"},
+		"mysql.charset":                {"IM_MYSQL_CHARSET", "MYSQL_CHARSET"},
+		"mysql.max_open_conns":         {"IM_MYSQL_MAX_OPEN_CONNS", "MYSQL_MAX_OPEN_CONNS"},
+		"mysql.max_idle_conns":         {"IM_MYSQL_MAX_IDLE_CONNS", "MYSQL_MAX_IDLE_CONNS"},
+		"mysql.conn_max_lifetime":      {"IM_MYSQL_CONN_MAX_LIFETIME", "MYSQL_CONN_MAX_LIFETIME"},
+		"mysql.conn_max_idle_time":     {"IM_MYSQL_CONN_MAX_IDLE_TIME", "MYSQL_CONN_MAX_IDLE_TIME"},
+		"mysql.dial_timeout":           {"IM_MYSQL_DIAL_TIMEOUT", "MYSQL_DIAL_TIMEOUT"},
+		"redis.addr":                   {"IM_REDIS_ADDR", "REDIS_ADDR"},
+		"redis.password":               {"IM_REDIS_PASSWORD", "REDIS_PASSWORD"},
+		"redis.db":                     {"IM_REDIS_DB", "REDIS_DB"},
+		"redis.pool_size":              {"IM_REDIS_POOL_SIZE", "REDIS_POOL_SIZE"},
+		"redis.min_idle_conns":         {"IM_REDIS_MIN_IDLE_CONNS", "REDIS_MIN_IDLE_CONNS"},
+		"redis.dial_timeout":           {"IM_REDIS_DIAL_TIMEOUT", "REDIS_DIAL_TIMEOUT"},
+		"redis.read_timeout":           {"IM_REDIS_READ_TIMEOUT", "REDIS_READ_TIMEOUT"},
+		"redis.write_timeout":          {"IM_REDIS_WRITE_TIMEOUT", "REDIS_WRITE_TIMEOUT"},
+		"snowflake.node_id":            {"IM_SNOWFLAKE_NODE_ID", "SNOWFLAKE_NODE_ID"},
+		"health.probe_timeout":         {"IM_HEALTH_PROBE_TIMEOUT", "HEALTH_PROBE_TIMEOUT"},
+		"upload.dir":                   {"IM_UPLOAD_DIR", "UPLOAD_DIR"},
+		"upload.temp_dir":              {"IM_UPLOAD_TEMP_DIR", "UPLOAD_TEMP_DIR"},
+		"upload.max_image_bytes":       {"IM_UPLOAD_MAX_IMAGE_BYTES", "UPLOAD_MAX_IMAGE_BYTES"},
+		"upload.max_file_bytes":        {"IM_UPLOAD_MAX_FILE_BYTES", "UPLOAD_MAX_FILE_BYTES"},
+		"upload.max_voice_bytes":       {"IM_UPLOAD_MAX_VOICE_BYTES", "UPLOAD_MAX_VOICE_BYTES"},
+		"upload.max_avatar_bytes":      {"IM_UPLOAD_MAX_AVATAR_BYTES", "UPLOAD_MAX_AVATAR_BYTES"},
+		"upload.max_image_width":       {"IM_UPLOAD_MAX_IMAGE_WIDTH", "UPLOAD_MAX_IMAGE_WIDTH"},
+		"upload.max_image_height":      {"IM_UPLOAD_MAX_IMAGE_HEIGHT", "UPLOAD_MAX_IMAGE_HEIGHT"},
+		"upload.max_image_pixels":      {"IM_UPLOAD_MAX_IMAGE_PIXELS", "UPLOAD_MAX_IMAGE_PIXELS"},
 		"upload.max_voice_duration_ms": {"IM_UPLOAD_MAX_VOICE_DURATION_MS", "UPLOAD_MAX_VOICE_DURATION_MS"},
-		"upload.thumbnail_max_dim":    {"IM_UPLOAD_THUMBNAIL_MAX_DIM", "UPLOAD_THUMBNAIL_MAX_DIM"},
-		"upload.download_url_ttl":     {"IM_UPLOAD_DOWNLOAD_URL_TTL", "UPLOAD_DOWNLOAD_URL_TTL"},
+		"upload.thumbnail_max_dim":     {"IM_UPLOAD_THUMBNAIL_MAX_DIM", "UPLOAD_THUMBNAIL_MAX_DIM"},
+		"upload.download_url_ttl":      {"IM_UPLOAD_DOWNLOAD_URL_TTL", "UPLOAD_DOWNLOAD_URL_TTL"},
 	}
 	for key, envs := range bindings {
 		args := append([]string{key}, envs...)
