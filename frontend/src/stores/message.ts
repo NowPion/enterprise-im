@@ -1026,6 +1026,13 @@ export const useMessageStore = defineStore('message', () => {
   function reset(): void {
     retryScheduler.cancelAll()
     unbindWSClient()
+    for (const list of Object.values(messagesByConversation.value)) {
+      for (const msg of list) {
+        if (msg.local_preview_url && msg.local_preview_url.startsWith('blob:') && typeof URL !== 'undefined') {
+          URL.revokeObjectURL(msg.local_preview_url)
+        }
+      }
+    }
     messagesByConversation.value = {}
     paginationByConversation.value = {}
     syncingByConversation.value = {}
