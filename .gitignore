@@ -1,0 +1,16 @@
+# Local configuration and desktop metadata
+.DS_Store
+.env
+.env.*
+!.env.example
+
+# Uploaded files on the host or in the backend
+uploads/
+
+# Go and Vue build, dependency and coverage output
+/backend/bin/
+/frontend/dist/
+node_modules/
+coverage/
+coverage.out
+*.test
