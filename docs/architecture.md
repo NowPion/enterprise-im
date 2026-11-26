@@ -52,6 +52,75 @@ Vue 3 使用 TypeScript、`<script setup>` Composition API、Vite、Element Plus
 
 会话列表从 conversation_members 与 conversations 联表取得，用 IN 批量装配单聊对端、群资料和成员，用 Redis Pipeline 获取在线状态。好友、群成员与回执明细同样按页批量读取。消息历史与增量均走 (conversation_id, seq) 唯一索引。单聊引用 direct_key 唯一索引，群按 group_id 唯一取得会话。
 
+## 消息可靠性与四阶段状态机
+
+`client_msg_id` 由客户端用 UUID v4 或 ULID 生成，并在发送队列中保持不变。`msg_id` 由服务端 Snowflake 生成，`seq` 是一个会话内的严格递增游标。一次发送的状态只允许沿 `sending → sent → delivered → read` 前进，服务端依据当前状态幂等处理重复帧，不把 WebSocket 写成功当作送达。
+
+```mermaid
+sequenceDiagram
+    participant C as 发送端
+    participant API as Go Service
+    participant DB as MySQL
+    participant S as Redis Streams
+    participant H as 接收端 Hub
+    participant R as 接收端
+    C->>C: 生成 client_msg_id，状态 sending
+    C->>API: msg.send(conversation_id, client_msg_id, payload)
+    API->>API: 校验 JWT、成员权限，查 Redis 去重
+    API->>S: 获取 conv:lock，INCR conv:seq:{conversation_id}
+    API->>DB: 事务写 messages、conversation、members、receipts
+    DB-->>API: commit，得到 Snowflake msg_id 与 seq
+    API->>S: XADD im:stream:messages，记录消息投递
+    API-->>C: msg.ack(msg_id, seq, status=sent)
+    S->>H: Consumer Group 投递，在线端写入有界队列
+    H-->>R: msg.push(status=sent)
+    R->>API: msg.delivered_ack(msg_id, seq)
+    API->>DB: receipt=delivered，推进 last_delivered_seq
+    API->>S: XADD im:stream:events(delivered)
+    S->>H: 回执事件路由发送端
+    H-->>C: msg.push(receipt=delivered)
+    R->>API: msg.read_ack(conversation_id, last_read_seq)
+    API->>DB: 水位线更新，批量 receipt=read，清零 unread_count
+    API->>S: XADD im:stream:events(read)
+    S->>H: 已读事件路由发送端
+    H-->>C: msg.push(receipt=read)
+```
+
+| 状态 | 进入条件 | 服务端持久化与回帧 | 重试与终点 |
+| --- | --- | --- | --- |
+| `sending` | 客户端把完整请求放入本地队列。只在收到 `msg.ack` 后移除。 | 尚未产生服务端消息。客户端断线仍以原 `client_msg_id` 重发。 | 超过本地重试期限显示失败，用户可再次发送同一个或新建一个请求。 |
+| `sent` | 服务端通过 JWT、成员、内容和附件引用校验，按 `(sender_id, client_msg_id)` 查 MySQL 唯一键和 Redis 去重。重复请求直接返回原 `msg_id`、`seq`、当前状态。 | 在一个 GORM 事务中分配 Snowflake、分配会话 `seq`、写 `messages`、更新会话摘要/未读和回执。事务提交后回 `msg.ack`，再 `XADD im:stream:messages`。 | Stream 生产或回帧失败不回滚已提交消息。重连先按 `seq` 补偿，消费者按 message_id 幂等。 |
+| `delivered` | 接收端从 WS 队列或离线增量拿到 `msg.push` 后立即回 `msg.delivered_ack`。 | 按消息和接收者更新 `message_receipts`，只允许 `sent → delivered`，推进 `conversation_members.last_delivered_seq`，事件流通知发送端。 | 重复 ACK 只返回当前水位。离线端在补偿拉取后也要 ACK，服务端不会因在线状态猜测送达。 |
+| `read` | 接收端打开会话并把可见范围的最大 seq 作为 `last_read_seq` 上报 WS 或 HTTP。 | 校验该用户是成员且目标 seq 不超过会话当前末 seq，单调更新 `last_read_seq`，批量把范围内自己的 receipts 标为 `read`，将未读清零并发已读事件。 | 较小或重复水位不回退。超过末 seq 的请求返回校验错误并不改库。 |
+
+### seq、幂等与故障窗口
+
+每次写入先 `SET conv:lock:{conversation_id} <token> NX PX 5000`，锁内检查 `MAX(seq)`，缺失时以 MySQL 最大值初始化 `conv:seq:{conversation_id}`，再执行 `INCR`。锁覆盖分配、MySQL 事务与提交结果处理。事务失败时使用带 token 的 Lua 脚本恢复旧值或删除刚初始化的 key。进程在提交后崩溃造成的悬空增量由下一次持锁操作以 MySQL `MAX(seq)` 校准，不能跳过一个已提交消息，也不会把未提交序号暴露给客户端。`uk_msg_conv_seq` 是最终约束，冲突时回源读取已存在消息并按幂等规则返回。
+
+同一发送请求先查 `im:dedupe:{sender_id}:{client_msg_id}`。缓存值是 `msg_id|conversation_id|seq|status`，TTL 24 小时，写入使用 `SET NX`，并以 MySQL 唯一键作为永久事实。正在处理的短锁 `im:dedupe:lock:{sender_id}:{client_msg_id}` TTL 10 秒，异常过期后由下一次请求重新读取数据库。Snowflake 节点号必须在配置中唯一，时钟回拨由生成器暂停或拒绝，不复用已发出的 ID。
+
+## Redis Key、Streams 与消费者规范
+
+| Key 或命名 | 类型、TTL 与值 | 语义和写入边界 |
+| --- | --- | --- |
+| `im:presence:user:{user_id}` | String，TTL 75 秒，值为在线端数或最后心跳时间 | 任一端心跳续期。连接建立/关闭用计数脚本更新，只有计数为零且所有 session key 过期才广播离线。 |
+| `im:presence:session:{session_id}` | Hash，TTL 75 秒，含 `user_id/device_id/node_id/conn_id/last_seen_at` | 每一条 WS 连接一个租约。刷新和注销都验证 session_id、conn_id，避免旧连接删除新连接。 |
+| `im:route:user:{user_id}` | Set，TTL 90 秒，成员是 `node_id:conn_id` | 跨实例路由索引。节点注销只移除本连接，广播由目标节点过滤无效成员。 |
+| `im:route:session:{session_id}` | String，TTL 90 秒，值为 `node_id:conn_id` | 将 Refresh 会话映射到 WS 连接，禁用或单端退出时用于精准踢除。 |
+| `conv:seq:{conversation_id}` | String，无固定 TTL，非负整数 | 会话序列缓存。只在持有 `conv:lock:{conversation_id}` 时校准和递增，MySQL `MAX(seq)` 是恢复来源。 |
+| `conv:lock:{conversation_id}` | String，PX 5000，随机 token | 串行化 seq 分配、消息事务和失败恢复。释放使用 token 校验 Lua。 |
+| `im:dedupe:{sender_id}:{client_msg_id}` | String，TTL 24h，消息定位与状态 | 快速幂等命中，不能替代 MySQL 唯一约束。 |
+| `im:dedupe:lock:{sender_id}:{client_msg_id}` | String，PX 10s | 同一客户端请求并发去重。过期即可重试，不保存正文。 |
+| `im:token:blacklist:{jti}` | String，TTL 至 Access Token 到期，值为撤销原因 | 改密、退出、禁用和踢下线写入。每次 REST、WS 握手和入站帧检查。 |
+| `im:stream:messages` | Redis Stream，按消息保留 7d 或长度上限 | 字段 `kind=message`、`message_id`、`conversation_id`、`seq`、`sender_id`、`payload_ref`。事务提交后 XADD，用于在线投递和离线补偿索引。 |
+| `im:stream:events` | Redis Stream，按事件保留 7d 或长度上限 | 字段 `kind=delivered\|read\|presence\|friend\|group\|recall\|kick`、目标、会话和水位。用于通知和回执广播。 |
+| `im:stream:dead:{messages\|events}` | Redis Stream，按月或人工审计保留 | 超过重试上限的完整事件引用、原 stream id、错误摘要、最后消费者。后台监控报警，人工修复后用原幂等键重放。 |
+| `im:stream:pending:reclaim:{messages\|events}:{group}` | Hash，按日过期 | 记录最近一次 XAUTOCLAIM 起点、认领数、失败数和时间。它是可观测性游标，真正的 Pending 仍由 Redis PEL 维护。 |
+
+固定 Consumer Group 如下。`im-msg-persist` 负责提交补偿，`im-msg-deliver` 负责消息投递，`im-event-deliver` 负责事件通知，`im-event-audit` 负责审计与监控。每个进程使用 `consumer={node_id}-{worker_id}`，不能共享同一 consumer 名称。
+
+消费者调用 `XREADGROUP GROUP <group> <consumer> COUNT 100 BLOCK 2000 STREAMS <stream> >`。完成业务事务、更新回执或把帧成功放入目标 Hub 的有界队列后才 `XACK <stream> <group> <id>`。消费逻辑以 stream id 与业务唯一键幂等，重复消息不得重复未读或重复广播。工作线程每 30 秒用 `XAUTOCLAIM <stream> <group> reclaim-{node_id} 30000 0 COUNT 100` 认领超时 Pending，五次失败或超过 15 分钟写入 `im:stream:dead:*` 并 XACK 原条目。消费者恢复时先处理 Pending，再读 `>`，停机只停止领取新条目，遗留 PEL 由下一节点认领。`XTRIM MINID` 或 `MAXLEN ~` 只在消息已被全部业务保留策略覆盖后运行。
+
 ### 部署、生命周期与验收
 
 `docker compose up -d --build` 是一键冷启动入口。mysql 使用 MySQL 8.0、utf8mb4、数据卷、初始化脚本 deploy/mysql/init.sql 与健康检查；redis 使用 Redis 7、AOF、数据卷与健康检查。backend 由 Go 多阶段镜像构建，等待两项健康检查通过，挂载 uploads/。frontend 在 Node 构建阶段产生 Vue 静态资源，由 Nginx 托管并支持前端路由回退，向后端反代 /api、/uploads 和带 Upgrade、Connection 头的 /ws。Nginx 读超时长于心跳失效期。
