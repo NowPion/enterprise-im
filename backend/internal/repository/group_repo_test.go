@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	gormmysql "gorm.io/driver/mysql"
 	"gorm.io/gorm"
 
 	"enterprise-im/backend/internal/config"
@@ -17,6 +19,34 @@ import (
 	"enterprise-im/backend/internal/pkg/logger"
 	"enterprise-im/backend/internal/pkg/snowflake"
 )
+
+func TestListUserGroupsSQLQuotesReservedGroupsTable(t *testing.T) {
+	dryDB, err := gorm.Open(gormmysql.New(gormmysql.Config{
+		DSN:                       "user:pass@tcp(127.0.0.1:1)/enterprise_im?parseTime=true",
+		SkipInitializeWithVersion: true,
+	}), &gorm.Config{
+		DryRun:               true,
+		DisableAutomaticPing: true,
+	})
+	if err != nil {
+		t.Fatalf("open dry-run mysql gorm: %v", err)
+	}
+	repo := NewGormGroupRepository(dryDB)
+	stmt := repo.buildListUserGroupsQuery(context.Background(), UserGroupListFilter{
+		UserID:   10001,
+		Status:   model.GroupStatusActive,
+		CursorID: 500,
+		Limit:    20,
+	}).Find(&[]map[string]any{}).Statement
+
+	sql := stmt.SQL.String()
+	if !strings.Contains(sql, "FROM `groups` AS g") {
+		t.Fatalf("expected backtick-quoted `groups` in SQL, got: %s", sql)
+	}
+	if !strings.Contains(sql, "INNER JOIN `group_members` AS gm") {
+		t.Fatalf("expected backtick-quoted `group_members` in SQL, got: %s", sql)
+	}
+}
 
 func TestGormGroupRepositoryNilGuards(t *testing.T) {
 	ctx := context.Background()
@@ -216,5 +246,73 @@ func TestLiveGroupRepositoryIntegration(t *testing.T) {
 	}
 	if hasMore || len(rows) != 1 || rows[0].MemberCount != 2 || rows[0].ConversationID != createdConvID {
 		t.Fatalf("unexpected ListUserGroups result: %+v hasMore=%v", rows, hasMore)
+	}
+
+	// Verify status + cursor filters on ListUserGroups against real MySQL 8.0.
+	activeRows, activeHasMore, err := repo.ListUserGroups(ctx, UserGroupListFilter{
+		UserID:   u1.ID,
+		Status:   model.GroupStatusActive,
+		CursorID: createdGroupID + 1,
+		Limit:    20,
+	})
+	if err != nil {
+		t.Fatalf("ListUserGroups with status+cursor failed: %v", err)
+	}
+	if activeHasMore || len(activeRows) != 1 || activeRows[0].Group.ID != createdGroupID {
+		t.Fatalf("unexpected filtered ListUserGroups result: %+v hasMore=%v", activeRows, activeHasMore)
+	}
+
+	// Verify GetGroupAndConversation, update, role/nickname, hide/rejoin, and audit query against real MySQL 8.0.
+	gotGroup, gotConv, err := repo.GetGroupAndConversation(ctx, createdGroupID)
+	if err != nil || gotGroup == nil || gotConv == nil || gotConv.ID != createdConvID {
+		t.Fatalf("GetGroupAndConversation failed: g=%+v c=%+v err=%v", gotGroup, gotConv, err)
+	}
+	err = repo.WithTx(ctx, func(tx *gorm.DB) error {
+		if lockErr := func() error {
+			_, gErr := repo.LockGroupByID(ctx, tx, createdGroupID)
+			return gErr
+		}(); lockErr != nil {
+			return lockErr
+		}
+		if updErr := repo.UpdateGroupFields(ctx, tx, createdGroupID, map[string]any{"name": "Live Updated Group", "updated_at": now}); updErr != nil {
+			return updErr
+		}
+		if roleErr := repo.UpdateGroupMemberRole(ctx, tx, createdGroupID, u2.ID, model.GroupRoleAdmin, now); roleErr != nil {
+			return roleErr
+		}
+		if nickErr := repo.UpdateGroupMemberNickname(ctx, tx, createdGroupID, u2.ID, "Nick2", now); nickErr != nil {
+			return nickErr
+		}
+		if delErr := repo.DeleteGroupMember(ctx, tx, createdGroupID, u2.ID); delErr != nil {
+			return delErr
+		}
+		if hideErr := repo.HideConversationMember(ctx, tx, createdConvID, u2.ID, now); hideErr != nil {
+			return hideErr
+		}
+		if _, upsertErr := repo.UpsertConversationMembersOnJoin(ctx, tx, createdConvID, []uint64{u2.ID}, 1, 1, now); upsertErr != nil {
+			return upsertErr
+		}
+		gid := createdGroupID
+		cid := createdConvID
+		return repo.AppendAuditLog(ctx, tx, &model.AuditLog{
+			EventID:        "evt-live-" + uuid.NewString(),
+			Scope:          model.AuditScopeGroup,
+			Action:         "group.update",
+			ActorID:        u1.ID,
+			ActorRole:      model.GroupRoleOwner,
+			TargetType:     model.AuditTargetGroup,
+			TargetID:       createdGroupID,
+			GroupID:        &gid,
+			ConversationID: &cid,
+			CreatedAt:      now,
+		})
+	})
+	if err != nil {
+		t.Fatalf("live group mutations tx failed: %v", err)
+	}
+
+	audits, auditMore, err := repo.ListGroupAuditLogs(ctx, GroupAuditListFilter{GroupID: createdGroupID, Limit: 10})
+	if err != nil || auditMore || len(audits) != 1 || audits[0].Action != "group.update" {
+		t.Fatalf("ListGroupAuditLogs failed: audits=%+v more=%v err=%v", audits, auditMore, err)
 	}
 }
