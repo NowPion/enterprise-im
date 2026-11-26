@@ -141,3 +141,128 @@ HTTP 消息发送和 WS `msg.send` 共用 `(sender_id, client_msg_id)` 唯一约
 ## HTTP 错误处理
 
 错误仍使用 `{code, message, data, request_id}`。HTTP 状态表示传输层结果，客户端按业务 code 分支。可恢复消息错误必须保留原 client_msg_id，并在重连后按会话 seq 校验。
+
+## WebSocket JSON 协议
+
+### Envelope
+
+客户端与服务端的每一帧都必须使用同一 JSON Envelope，服务端不接受裸数据、未知 type 或缺少 data 的帧。
+
+~~~json
+{
+  "type": "msg.send",
+  "req_id": "req_01J8K3Y6G2N8",
+  "timestamp": 1795687200123,
+  "data": {}
+}
+~~~
+
+`type` 是下表中的固定字符串。请求方生成 `req_id`，服务端在应答和错误中原样返回相关 ID。`timestamp` 为发送方 Unix 毫秒时间，服务端以接收时间进行鉴权和排序，不能用它分配会话 seq。单帧大小超过配置上限返回错误码 10002。握手地址为 `/ws?access_token=<access_token>`，非浏览器客户端也可使用 Authorization 头。服务端在握手和每个入站帧检查用户、session、黑名单、成员身份和账号状态。
+
+### 11 类帧
+
+| type | 方向 | data 示例 | 处理契约 |
+| --- | --- | --- | --- |
+| `msg.send` | 客户端 → 服务端 | `{"conversation_id":"90001","client_msg_id":"01J8K3Y6G2N8B6QWZ8Y9Q5A4C1","msg_type":"text","content":"hello","extra":{}}` | 客户端先将消息置为 `sending`。服务端校验成员、内容和附件，按 `(sender_id, client_msg_id)` 去重，分配 Snowflake `msg_id` 和会话 `seq`，事务提交后回 `msg.ack`。 |
+| `msg.ack` | 服务端 → 发送端 | `{"client_msg_id":"01J8K3Y6G2N8B6QWZ8Y9Q5A4C1","msg_id":"188900000000001","conversation_id":"90001","seq":"42","status":"sent","delivery_status":"sent"}` | 只表示消息已经写入 MySQL。重发同一 client_msg_id 必须返回同一 msg_id、seq 和当前状态。 |
+| `msg.push` | 服务端 → 会话成员端 | `{"message":{"msg_id":"188900000000001","conversation_id":"90001","seq":"42","sender_id":"10001","client_msg_id":"01J8K3Y6G2N8B6QWZ8Y9Q5A4C1","msg_type":"text","content":"hello","extra":{},"status":"normal"},"delivery_status":"sent"}` | 由 `im:stream:messages` Consumer Group 投递到在线端，或由 `/sync` 增量补偿。接收端写入本地 Store 后回送送达 ACK。也可携带发送端收到的 delivered/read 水位变化。 |
+| `msg.delivered_ack` | 接收端 → 服务端 | `{"msg_id":"188900000000001","conversation_id":"90001","seq":"42"}` | 仅允许该消息的会话成员推进自己的送达回执。服务端单调推进 `last_delivered_seq`，并由 `im:stream:events` 通知发送端。 |
+| `msg.read_ack` | 接收端 → 服务端 | `{"conversation_id":"90001","last_read_seq":"42"}` | 仅允许成员把本人的已读水位向前推进。服务端批量更新范围内回执、清零未读并广播已读事件。 |
+| `msg.recall` | 客户端 → 服务端，随后服务端广播 | `{"conversation_id":"90001","msg_id":"188900000000001"}` | 只允许原发送者在撤回窗口内操作。事务中更新原消息为 recalled，追加有独立 seq 的 recall/system 记录，再经 events stream 广播。 |
+| `presence.update` | 服务端 → 订阅端 | `{"user_id":"10002","online":true,"device_count":2,"last_online_at":null}` | 好友或群成员的合并在线状态。只有所有 session 租约失效后才发 offline，客户端不能根据单个连接关闭自行判定。 |
+| `ping` | 客户端 → 服务端 | `{"nonce":"p_01J8K3Y6","last_seq":{"90001":"42"}}` | 刷新 WS 连接租约和 `im:presence:*` TTL。`last_seq` 仅作为补偿提示，不改变业务状态。 |
+| `pong` | 服务端 → 客户端 | `{"nonce":"p_01J8K3Y6","server_time":1795687200123,"session_expires_at":"2026-11-26T12:00:00Z"}` | 确认心跳并返回服务端时间和当前 session 到期时间。 |
+| `error` | 双向 | `{"code":18005,"message":"conversation access denied","retryable":false,"related_type":"msg.send","related_req_id":"req_01J8K3Y6"}` | 单帧失败响应。错误不会改变业务状态，`related_req_id` 指出失败请求。鉴权或策略失败可以随后发送关闭通知并关闭连接。 |
+| `system.notice` | 服务端 → 用户或会话成员 | `{"event":"friend.requested","notice_id":"n_01J8K3Y6","conversation_id":null,"actor_id":"10002","target_user_id":"10001","payload":{"request_id":"70001","message":"hello"}}` | 第 11 类系统通知。覆盖好友申请与处理、群成员变更、撤回说明、会话吊销、账号禁用、被踢和停服。payload 只引用 REST 资源或系统消息，不伪造正文。 |
+
+`system.notice.event` 至少包括 `friend.requested`、`friend.accepted`、`friend.rejected`、`group.member_added`、`group.member_removed`、`group.role_changed`、`group.disbanded`、`message.recalled`、`session.revoked`、`account.kicked`、`account.disabled` 和 `server.draining`。`msg.push` 的 `delivery_status` 可为 `sent`、`delivered` 或 `read`，收到 `msg.ack` 绝不等同于送达。
+
+### 状态迁移、断线与 Stream
+
+消息状态只能沿 `sending → sent → delivered → read` 前进。
+
+1. 客户端保留稳定的 `client_msg_id`，把 `msg.send` 放入待确认队列。服务端在会话锁内校准并 `INCR conv:seq:{conversation_id}`，使用 Snowflake 生成 `msg_id`，在一个 GORM 事务中写 messages、会话摘要、成员未读和回执。提交后回 `msg.ack`，客户端进入 `sent`。
+2. 事务提交后 `XADD im:stream:messages`。在线成员通过 Consumer Group 得到 `msg.push`，离线成员用 `/api/v1/conversations/{conversation_id}/sync?after_seq=...` 补齐。接收端持久化本地消息后发 `msg.delivered_ack`，服务端推进 `delivered` 并经 `im:stream:events` 通知发送端。
+3. 接收端打开会话时发 `msg.read_ack`，也可调用已定义的 HTTP read 接口。服务端只接受不超过会话末 seq 的单调水位，批量更新 receipts、`last_read_seq` 和 `unread_count=0`，再经 events stream 通知发送端，进入 `read`。
+4. ACK、Stream 消费和 Hub 投递都必须幂等。重复 ACK 不回退水位，Stream 重投不增加未读。断线重连先用原 client_msg_id 重发未获 ack 的请求，再按各会话 last_seq 增量补偿，最后恢复实时订阅。
+5. Redis 去重缓存是快速路径，MySQL `(sender_id, client_msg_id)` 和 `(conversation_id, seq)` 唯一约束是最终事实。`im:dedupe:*`、`im:token:blacklist:*`、presence/session route keys、`im:stream:messages`、`im:stream:events`、Consumer Group、`XACK` 和 `XAUTOCLAIM` 的 TTL、命名与 Pending 补偿语义以 architecture.md 为准。
+
+服务端 close code 使用 1000 表示正常停机，1008 表示策略或鉴权失败，1011 表示内部失败。单连接有界发送队列满时关闭慢端，客户端按 last_seq 补偿，不能阻塞其他连接。
+
+## 统一业务错误码
+
+所有 HTTP 错误和 WS `error` 帧都使用下表中的 code。HTTP 状态码只表示传输层结果，响应信封仍为 `{ "code": 0, "message": "ok", "data": ..., "request_id": "..." }` 的同形结构。`message` 面向调用方，不能泄露密码、Token、磁盘路径或其他用户隐私。
+
+| code | HTTP / WS | 含义 |
+| ---: | ---: | --- |
+| 0 | 2xx | 成功 |
+| 10000 | 400 | 参数格式错误或必填字段缺失 |
+| 10001 | 400 | 参数值、枚举或游标不合法 |
+| 10002 | 413 | HTTP 请求或 WS 帧超过大小限制 |
+| 10003 | 429 | 请求频率超过限制 |
+| 11001 | 401 | Access Token 缺失、格式错误或过期 |
+| 11002 | 401 | Access Token JTI 已在黑名单 |
+| 11003 | 401 | Refresh Token 无效、已使用或已过期 |
+| 11004 | 403 | 账号已禁用 |
+| 11005 | 403 | session 已撤销或设备不匹配 |
+| 11006 | 401 | 用户名或密码错误 |
+| 11007 | 409 | 用户名已存在 |
+| 11008 | 409 | Refresh 并发轮换冲突，应使用最新 Token |
+| 11009 | 409 | 设备会话数超过配置上限 |
+| 12001 | 404 | 用户不存在 |
+| 12002 | 409 | 不能向自己发好友申请 |
+| 12003 | 409 | 已经是好友 |
+| 12004 | 409 | 已有待处理好友申请 |
+| 12005 | 404 | 好友申请不存在 |
+| 12006 | 409 | 好友申请已经处理 |
+| 12007 | 403 | 不是好友或好友关系已删除 |
+| 12008 | 404 | 好友关系不存在 |
+| 13001 | 404 | 会话不存在 |
+| 13002 | 403 | 不是会话成员 |
+| 13003 | 409 | 会话已隐藏或已解散 |
+| 13004 | 400 | seq 游标格式错误 |
+| 13005 | 409 | delivered/read 水位不能回退 |
+| 13006 | 400 | 水位超过会话当前最大 seq |
+| 14001 | 409 | client_msg_id 已被其他消息内容占用 |
+| 14002 | 404 | 消息不存在 |
+| 14003 | 403 | 无权发送、撤回或查看消息 |
+| 14004 | 409 | 消息已经撤回 |
+| 14005 | 409 | 已超过撤回时间窗口 |
+| 14006 | 400 | 消息类型、内容或附件不匹配 |
+| 14007 | 409 | 消息仍在处理，按原 client_msg_id 重试 |
+| 14008 | 503 | 消息已持久化但事件流暂不可用，可安全重试 |
+| 15001 | 404 | 群不存在 |
+| 15002 | 403 | 不是群成员 |
+| 15003 | 403 | 群角色无权执行操作 |
+| 15004 | 409 | 群已解散 |
+| 15005 | 409 | 群已满 |
+| 15006 | 409 | 用户已经是群成员 |
+| 15007 | 404 | 群成员不存在 |
+| 15008 | 409 | 群主必须先转让或解散 |
+| 15009 | 400 | 不能把群主降为普通成员 |
+| 15010 | 409 | 目标用户不满足转让条件 |
+| 16001 | 400 | 文件字段缺失或 MIME 不允许 |
+| 16002 | 413 | 文件超过大小或像素限制 |
+| 16003 | 422 | 文件内容与声明类型不符 |
+| 16004 | 403 | 没有资产或消息下载权限 |
+| 16005 | 404 | 资产不存在或已清理 |
+| 16006 | 409 | 资产已经被消息引用，不能删除 |
+| 17001 | 403 | 需要平台管理员角色 |
+| 17002 | 404 | 管理对象不存在 |
+| 17003 | 409 | 目标账号或群已经是目标状态 |
+| 17004 | 409 | 不能禁用当前唯一管理员 |
+| 17005 | 400 | 审计过滤器或时间范围不合法 |
+| 17006 | 503 | 监控依赖不可用 |
+| 18001 | 401 | WS 握手鉴权失败 |
+| 18002 | 400 | WS Envelope、req_id 或 timestamp 无效 |
+| 18003 | 400 | 未知 WS 帧类型 |
+| 18004 | 409 | WS 帧违反当前消息状态 |
+| 18005 | 403 | WS 连接无权访问会话 |
+| 18006 | 1008 | WS session 被撤销、账号被禁用或被踢 |
+| 18007 | 1011 | WS 内部处理失败，客户端按游标补偿 |
+| 19001 | 503 | MySQL 不可用 |
+| 19002 | 503 | Redis 不可用 |
+| 19003 | 503 | Redis Stream Pending 超过告警阈值 |
+| 19004 | 500 | 数据一致性约束冲突，记录 request_id 后重试 |
+
+客户端只能对明确可恢复的 14007、14008、19001、19002、18007 重试，并且必须保留原 client_msg_id。18006 需要重新登录或等待账号解禁，13005、13006 和 14001 不可盲目重试。
