@@ -82,6 +82,7 @@ upload:
 
 chat:
   recall_window: 2m
+  direct_push_fallback: false # Transition-only fallback; default false routes msg.push via im:stream:messages -> im-msg-deliver
 
 mq:
   stream_max_len: 100000

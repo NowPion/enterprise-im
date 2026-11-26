@@ -201,6 +201,13 @@ func buildRouter(
 	uploadSvc := service.NewUploadService(assetRepo, userPresenceRepo, uploadStorage, cfg.Upload, authCfg.JWT.Secret, log)
 	convSvc := service.NewConversationService(convRepo, friendRepo, log)
 	msgSvc := service.NewMessageService(convRepo, msgRepo, seqAllocator, idGen, hub, cfg.Chat.RecallWindow, log)
+	if cfg.Chat.DirectPushFallback {
+		// Explicit transition-only toggle when no im-msg-deliver consumer is attached; never both publish and direct-push.
+		msgSvc.SetDirectPushFallback(true)
+	} else {
+		// Default Stage 7+ production path: XADD im:stream:messages / im:stream:events; online msg.push is owned by im-msg-deliver.
+		msgSvc.SetStreamPublisher(newRedisStreamPublisherAdapter(repository.NewRedisStreamPublisher(rdb)))
+	}
 	hub.SetChatService(msgSvc)
 	groupRepo := repository.NewGormGroupRepository(db)
 	groupSvc := service.NewGroupService(groupRepo, seqAllocator, frPresence, idGen, hub, log)
@@ -229,6 +236,43 @@ func buildRouter(
 		mqProducer: mqProducer,
 		mqManager:  mqManager,
 	}, nil
+}
+
+type redisStreamPublisherAdapter struct {
+	pub *repository.RedisStreamPublisher
+}
+
+func newRedisStreamPublisherAdapter(pub *repository.RedisStreamPublisher) service.StreamPublisher {
+	if pub == nil {
+		return nil
+	}
+	return &redisStreamPublisherAdapter{pub: pub}
+}
+
+func (a *redisStreamPublisherAdapter) PublishMessage(ctx context.Context, msg service.StreamMessage) error {
+	return a.pub.PublishMessage(ctx, repository.StreamMessageInput{
+		Kind:           msg.Kind,
+		MessageID:      msg.MessageID,
+		ConversationID: msg.ConversationID,
+		Seq:            msg.Seq,
+		SenderID:       msg.SenderID,
+		PayloadRef:     msg.PayloadRef,
+		RecipientIDs:   msg.RecipientIDs,
+	})
+}
+
+func (a *redisStreamPublisherAdapter) PublishEvent(ctx context.Context, evt service.StreamEvent) error {
+	return a.pub.PublishEvent(ctx, repository.StreamEventInput{
+		Kind:           evt.Kind,
+		Event:          evt.Event,
+		ConversationID: evt.ConversationID,
+		ActorID:        evt.ActorID,
+		TargetUserID:   evt.TargetUserID,
+		TargetUserIDs:  evt.TargetUserIDs,
+		MessageID:      evt.MessageID,
+		Seq:            evt.Seq,
+		Payload:        evt.Payload,
+	})
 }
 
 func newLoggedNoopSessionRevokeHook(log *slog.Logger) service.SessionRevokeHook {

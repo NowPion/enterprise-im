@@ -57,7 +57,8 @@ func (u UploadConfig) MaxPossibleBytes() int64 {
 
 // ChatConfig holds chat messaging and recall policy settings.
 type ChatConfig struct {
-	RecallWindow time.Duration `mapstructure:"recall_window"`
+	RecallWindow       time.Duration `mapstructure:"recall_window"`
+	DirectPushFallback bool          `mapstructure:"direct_push_fallback"`
 }
 
 // MQConfig holds Redis Streams producer, consumer group, reclaim, dead-letter, and retention settings.
@@ -355,12 +356,13 @@ func (c *Config) RedactedSummary() map[string]any {
 		"redis_db":           c.Redis.DB,
 		"redis_password":     "[REDACTED]",
 		"snowflake_node_id":  c.Snowflake.NodeID,
-		"allowed_origins":    c.CORS.AllowedOrigins,
-		"chat_recall_window": c.Chat.RecallWindow.String(),
-		"mq_stream_max_len":  c.MQ.StreamMaxLen,
-		"mq_retention":       c.MQ.StreamRetention.String(),
-		"mq_reclaim_idle":    c.MQ.ReclaimMinIdle.String(),
-		"mq_max_retries":     c.MQ.MaxRetries,
+		"allowed_origins":           c.CORS.AllowedOrigins,
+		"chat_recall_window":        c.Chat.RecallWindow.String(),
+		"chat_direct_push_fallback": c.Chat.DirectPushFallback,
+		"mq_stream_max_len":         c.MQ.StreamMaxLen,
+		"mq_retention":              c.MQ.StreamRetention.String(),
+		"mq_reclaim_idle":           c.MQ.ReclaimMinIdle.String(),
+		"mq_max_retries":            c.MQ.MaxRetries,
 	}
 }
 
@@ -421,6 +423,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("upload.thumbnail_max_dim", 320)
 	v.SetDefault("upload.download_url_ttl", "15m")
 	v.SetDefault("chat.recall_window", "2m")
+	v.SetDefault("chat.direct_push_fallback", false)
 
 	v.SetDefault("mq.stream_max_len", 100000)
 	v.SetDefault("mq.stream_retention", "168h")
@@ -441,6 +444,7 @@ func setDefaults(v *viper.Viper) {
 func bindEnvs(v *viper.Viper) {
 	bindings := map[string][]string{
 		"chat.recall_window":               {"IM_CHAT_RECALL_WINDOW", "CHAT_RECALL_WINDOW"},
+		"chat.direct_push_fallback":        {"IM_CHAT_DIRECT_PUSH_FALLBACK", "CHAT_DIRECT_PUSH_FALLBACK"},
 		"mq.stream_max_len":                {"IM_MQ_STREAM_MAX_LEN", "MQ_STREAM_MAX_LEN"},
 		"mq.stream_retention":              {"IM_MQ_STREAM_RETENTION", "MQ_STREAM_RETENTION"},
 		"mq.trim_interval":                 {"IM_MQ_TRIM_INTERVAL", "MQ_TRIM_INTERVAL"},
