@@ -15,6 +15,28 @@ export interface MessageInput extends Data {
   extra: Data
 }
 
+export interface DeliveredAckInput extends Data {
+  msg_id: string
+  conversation_id: string
+  seq: string
+}
+
+export interface ReadAckInput extends Data {
+  conversation_id: string
+  last_read_seq: string
+}
+
+export interface RecallInput extends Data {
+  conversation_id: string
+  msg_id: string
+}
+
+export interface PendingMessageSummary {
+  req_id: string
+  client_msg_id: string
+  conversation_id: string
+}
+
 export interface Transport {
   readonly readyState: number
   onopen: ((event: Event) => void) | null
@@ -114,6 +136,7 @@ function requestId(): string {
 
 export class WSClient {
   private readonly options: WSClientOptions
+  private dynamicOptions: Partial<Pick<WSClientOptions, 'getAccessToken' | 'getAccountId' | 'getLastSeq'>> = {}
   private readonly listeners: { [Key in keyof Events]: Set<(event: Events[Key]) => void> } = {
     open: new Set(), close: new Set(), error: new Set(), pong: new Set(),
     'presence.update': new Set(), 'system.notice': new Set(), 'msg.ack': new Set(),
@@ -144,6 +167,30 @@ export class WSClient {
     this.options = options
   }
 
+  get isConnected(): boolean {
+    return this.authenticated && this.socket?.readyState === 1
+  }
+
+  updateOptions(partial: Partial<Pick<WSClientOptions, 'getAccessToken' | 'getAccountId' | 'getLastSeq'>>) {
+    if (partial.getAccessToken !== undefined) {
+      this.dynamicOptions.getAccessToken = partial.getAccessToken
+    }
+    if (partial.getAccountId !== undefined) {
+      this.dynamicOptions.getAccountId = partial.getAccountId
+    }
+    if (partial.getLastSeq !== undefined) {
+      this.dynamicOptions.getLastSeq = partial.getLastSeq
+    }
+  }
+
+  private resolveAccessToken(): string {
+    return (this.dynamicOptions.getAccessToken ?? this.options.getAccessToken)()
+  }
+
+  private resolveLastSeq(): Record<string, string> {
+    return (this.dynamicOptions.getLastSeq ?? this.options.getLastSeq)?.() ?? {}
+  }
+
   get pendingCount() {
     const accountKey = this.resolveCurrentAccountKey()
     if (!accountKey) return 0
@@ -161,8 +208,9 @@ export class WSClient {
   }
 
   private resolveAccountKey(token: string): string | null {
-    if (this.options.getAccountId) {
-      const accountId = this.options.getAccountId()
+    const getAccountId = this.dynamicOptions.getAccountId ?? this.options.getAccountId
+    if (getAccountId) {
+      const accountId = getAccountId()
       return nonempty(accountId) ? `account:${accountId.trim()}` : null
     }
     if (!nonempty(token)) return null
@@ -172,7 +220,7 @@ export class WSClient {
 
   private resolveCurrentAccountKey(): string | null {
     try {
-      return this.resolveAccountKey(this.options.getAccessToken())
+      return this.resolveAccountKey(this.resolveAccessToken())
     } catch {
       return null
     }
@@ -227,6 +275,78 @@ export class WSClient {
     return reqId
   }
 
+  sendDeliveredAck(data: DeliveredAckInput, reqId: string = requestId()): string | null {
+    if (!nonempty(reqId) || !nonempty(data.msg_id) || !nonempty(data.conversation_id) || !nonempty(data.seq)) {
+      throw new Error('Missing delivered_ack identity')
+    }
+    const accountKey = this.resolveCurrentAccountKey()
+    if (!accountKey || !this.authenticated || this.socket?.readyState !== 1 || this.socketAccountKey !== accountKey) {
+      return null
+    }
+    return this.write(this.socket, encode('msg.delivered_ack', reqId, data)) ? reqId : null
+  }
+
+  sendReadAck(data: ReadAckInput, reqId: string = requestId()): string | null {
+    if (!nonempty(reqId) || !nonempty(data.conversation_id) || !nonempty(data.last_read_seq)) {
+      throw new Error('Missing read_ack identity')
+    }
+    const accountKey = this.resolveCurrentAccountKey()
+    if (!accountKey || !this.authenticated || this.socket?.readyState !== 1 || this.socketAccountKey !== accountKey) {
+      return null
+    }
+    return this.write(this.socket, encode('msg.read_ack', reqId, data)) ? reqId : null
+  }
+
+  sendRecall(data: RecallInput, reqId: string = requestId()): string | null {
+    if (!nonempty(reqId) || !nonempty(data.conversation_id) || !nonempty(data.msg_id)) {
+      throw new Error('Missing recall identity')
+    }
+    const accountKey = this.resolveCurrentAccountKey()
+    if (!accountKey || !this.authenticated || this.socket?.readyState !== 1 || this.socketAccountKey !== accountKey) {
+      return null
+    }
+    return this.write(this.socket, encode('msg.recall', reqId, data)) ? reqId : null
+  }
+
+  hasPending(reqId: string): boolean {
+    const accountKey = this.resolveCurrentAccountKey()
+    if (!accountKey) return false
+    return this.pendingByAccount.get(accountKey)?.has(reqId) ?? false
+  }
+
+  removePending(reqId: string): boolean {
+    const accountKey = this.resolveCurrentAccountKey()
+    if (!accountKey) return false
+    return this.pendingByAccount.get(accountKey)?.delete(reqId) ?? false
+  }
+
+  retryPending(reqId: string): boolean {
+    const accountKey = this.resolveCurrentAccountKey()
+    if (!accountKey || !this.authenticated || this.socket?.readyState !== 1 || this.socketAccountKey !== accountKey) {
+      return false
+    }
+    const entry = this.pendingByAccount.get(accountKey)?.get(reqId)
+    if (!entry) return false
+    return this.write(this.socket, entry.text)
+  }
+
+  getPendingMessages(conversationId?: string): PendingMessageSummary[] {
+    const accountKey = this.resolveCurrentAccountKey()
+    if (!accountKey) return []
+    const accountPending = this.pendingByAccount.get(accountKey)
+    if (!accountPending) return []
+    const items: PendingMessageSummary[] = []
+    for (const [req_id, entry] of accountPending.entries()) {
+      if (conversationId && entry.conversation !== conversationId) continue
+      items.push({
+        req_id,
+        client_msg_id: entry.clientId,
+        conversation_id: entry.conversation,
+      })
+    }
+    return items
+  }
+
   private attempt() {
     clearTimeout(this.retry)
     this.retry = undefined
@@ -237,7 +357,7 @@ export class WSClient {
       const url = new URL('/ws', this.options.origin ?? location.origin)
       if (url.protocol === 'http:') url.protocol = 'ws:'
       if (url.protocol === 'https:') url.protocol = 'wss:'
-      token = this.options.getAccessToken()
+      token = this.resolveAccessToken()
       if (!nonempty(token)) throw new Error('Missing access token')
       accountKey = this.resolveAccountKey(token)
       if (!accountKey) throw new Error('Missing active account')
@@ -325,7 +445,7 @@ export class WSClient {
     this.authTimer = setTimeout(() => {
       if (socket === this.socket && !this.authenticated) socket.close()
     }, timeoutMs)
-    this.write(socket, encode('ping', nonce, { nonce, last_seq: this.options.getLastSeq?.() ?? {} }))
+    this.write(socket, encode('ping', nonce, { nonce, last_seq: this.resolveLastSeq() }))
   }
 
   private completeAuth(socket: Transport): boolean {
@@ -389,7 +509,7 @@ export class WSClient {
     }
     const nonce = requestId()
     this.awaitingPong = nonce
-    this.write(socket, encode('ping', nonce, { nonce, last_seq: this.options.getLastSeq?.() ?? {} }))
+    this.write(socket, encode('ping', nonce, { nonce, last_seq: this.resolveLastSeq() }))
   }
 
   private receive(socket: Transport, raw: unknown) {
@@ -448,5 +568,54 @@ export class WSClient {
       default:
         this.emit('error', { kind: 'protocol', cause: new Error('Unexpected WebSocket frame type') })
     }
+  }
+}
+
+let sharedWSClient: WSClient | null = null
+const sharedResetListeners = new Set<() => void>()
+let resettingSharedClient = false
+
+export function onSharedWSClientReset(listener: () => void): () => void {
+  sharedResetListeners.add(listener)
+  return () => {
+    sharedResetListeners.delete(listener)
+  }
+}
+
+export function createSharedWSClient(options: WSClientOptions): WSClient {
+  if (!sharedWSClient) {
+    sharedWSClient = new WSClient(options)
+  } else {
+    sharedWSClient.updateOptions({
+      getAccessToken: options.getAccessToken,
+      getAccountId: options.getAccountId,
+      getLastSeq: options.getLastSeq,
+    })
+  }
+  return sharedWSClient
+}
+
+export function getSharedWSClient(): WSClient | null {
+  return sharedWSClient
+}
+
+export function resetSharedWSClient(): void {
+  if (resettingSharedClient) return
+  resettingSharedClient = true
+  try {
+    const current = sharedWSClient
+    sharedWSClient = null
+    if (current) {
+      current.disconnect()
+    }
+    for (const listener of Array.from(sharedResetListeners)) {
+      try {
+        listener()
+      } catch {
+        // Isolate listener errors so shared reset always completes.
+      }
+    }
+  } finally {
+    resettingSharedClient = false
   }
 }

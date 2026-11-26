@@ -380,3 +380,183 @@ it('B2: stops immediately on 18006 session revocation without replaying pending 
   assert.deepEqual(events, ['error:frame', 'notice:session.revoked', 'close:1008'])
   assert.equal(sockets[0].sent.map(raw => JSON.parse(raw)).filter(f => f.type === 'msg.send').length, 0)
 })
+
+it('applies full jitter upper/lower bounds during exponential backoff reconnection', () => {
+  const minJitter = setup({ random: () => 0 })
+  minJitter.client.connect()
+  minJitter.sockets[0].close()
+  mock.timers.tick(0)
+  assert.equal(minJitter.sockets.length, 2)
+  minJitter.client.disconnect()
+
+  const maxJitter = setup({ random: () => 0.999 })
+  maxJitter.client.connect()
+  for (const cap of [1000, 2000, 4000]) {
+    const delay = Math.floor(0.999 * cap)
+    const count = maxJitter.sockets.length
+    maxJitter.sockets[count - 1].close()
+    mock.timers.tick(delay - 1)
+    assert.equal(maxJitter.sockets.length, count)
+    mock.timers.tick(1)
+    assert.equal(maxJitter.sockets.length, count + 1)
+  }
+  maxJitter.client.disconnect()
+})
+
+it('handles steady-state heartbeat ping/pong, rejects mismatched pongs, and times out unauthenticated probes', () => {
+  const { client, sockets } = setup({ heartbeatMs: 100, random: () => 0.5 })
+  const closes: number[] = []
+  const opens: number[] = []
+  const pongs: string[] = []
+  client.on('open', () => opens.push(1))
+  client.on('close', ev => closes.push(ev.code))
+  client.on('pong', ev => pongs.push(ev.req_id))
+
+  // Auth probe timeout closes socket and schedules reconnect without emitting open
+  client.connect()
+  sockets[0].open()
+  const badProbe = JSON.parse(sockets[0].sent[0])
+  sockets[0].receive(frame('pong', { nonce: 'wrong-nonce' }, badProbe.req_id))
+  sockets[0].receive(frame('pong', { nonce: badProbe.data.nonce }, 'wrong-req-id'))
+  assert.equal(opens.length, 0)
+  mock.timers.tick(100)
+  assert.equal(closes.length, 1)
+
+  // Reconnect and verify steady-state multi-cycle ping/pong keeps connection open
+  mock.timers.tick(500)
+  assert.equal(sockets.length, 2)
+  sockets[1].open()
+  authenticateSocket(sockets[1])
+  assert.equal(opens.length, 1)
+
+  for (let cycle = 1; cycle <= 3; cycle++) {
+    mock.timers.tick(100)
+    const pingFrame = JSON.parse(sockets[1].sent[cycle])
+    assert.equal(pingFrame.type, 'ping')
+    // Mismatched pong must not clear awaitingPong
+    sockets[1].receive(frame('pong', { nonce: 'stale-nonce' }, pingFrame.req_id))
+    assert.equal(pongs.length, cycle)
+    // Matching pong clears awaitingPong and emits pong
+    sockets[1].receive(frame('pong', { nonce: pingFrame.data.nonce, server_time: 1000 + cycle }, pingFrame.req_id))
+    assert.equal(pongs.length, cycle + 1)
+  }
+  assert.equal(closes.length, 1)
+
+  // Missing pong on next heartbeat triggers close
+  mock.timers.tick(100)
+  mock.timers.tick(100)
+  assert.equal(closes.length, 2)
+  client.disconnect()
+})
+
+it('evaluates getLastSeq dynamically on auth probes, heartbeats, and reconnects, defaulting to empty object', () => {
+  let seqMap: Record<string, string> = { '9': '42' }
+  const { client, sockets } = setup({ getLastSeq: () => ({ ...seqMap }), heartbeatMs: 100, random: () => 0.5 })
+
+  client.connect()
+  sockets[0].open()
+  const authPing = authenticateSocket(sockets[0])
+  assert.deepEqual(authPing.data.last_seq, { '9': '42' })
+
+  seqMap = { '9': '45', '12': '3' }
+  mock.timers.tick(100)
+  const hbPing = JSON.parse(sockets[0].sent[1])
+  assert.equal(hbPing.type, 'ping')
+  assert.deepEqual(hbPing.data.last_seq, { '9': '45', '12': '3' })
+
+  seqMap = { '9': '48', '12': '3' }
+  sockets[0].close()
+  mock.timers.tick(500)
+  sockets[1].open()
+  const reconnectPing = authenticateSocket(sockets[1])
+  assert.deepEqual(reconnectPing.data.last_seq, { '9': '48', '12': '3' })
+  client.disconnect()
+
+  const withoutHook = setup({ getLastSeq: undefined })
+  withoutHook.client.connect()
+  withoutHook.sockets[0].open()
+  const defaultPing = JSON.parse(withoutHook.sockets[0].sent[0])
+  assert.deepEqual(defaultPing.data.last_seq, {})
+  withoutHook.client.disconnect()
+})
+
+it('preserves offline FIFO pending queue per account across A->B->A switch and dispatches push/recall/delivered/read acks', () => {
+  let token = makeJwt('1001', 'jti-a1')
+  const { client, sockets } = setup({ getAccessToken: () => token })
+  const pushes: unknown[] = []
+  const recalls: unknown[] = []
+  const acks: string[] = []
+  client.on('msg.push', ev => pushes.push(ev.data))
+  client.on('msg.recall', ev => recalls.push(ev.data))
+  client.on('msg.ack', ev => acks.push(`${ev.req_id}:${ev.data.delivery_status}:${ev.data.status}`))
+
+  // Enqueue offline messages before connect
+  client.enqueue(message({ client_msg_id: 'c-fifo-1', content: 'first' }), 'req-fifo-1')
+  client.enqueue(message({ client_msg_id: 'c-fifo-2', content: 'second' }), 'req-fifo-2')
+  assert.equal(client.pendingCount, 2)
+  assert.equal(sockets.length, 0)
+
+  client.connect()
+  sockets[0].open()
+  authenticateSocket(sockets[0])
+
+  const sentA1 = sockets[0].sent.map(raw => JSON.parse(raw)).filter(f => f.type === 'msg.send')
+  assert.deepEqual(sentA1.map(f => f.req_id), ['req-fifo-1', 'req-fifo-2'])
+  assert.deepEqual(sentA1.map(f => f.data.client_msg_id), ['c-fifo-1', 'c-fifo-2'])
+
+  // Settle first with delivered, keep second pending
+  sockets[0].receive(frame('msg.ack', { ...ack, client_msg_id: 'c-fifo-1', msg_id: '201', seq: '50', delivery_status: 'delivered' }, 'req-fifo-1'))
+  assert.equal(client.pendingCount, 1)
+  assert.deepEqual(acks, ['req-fifo-1:delivered:normal'])
+
+  // Switch to account B: pendingCount is 0, B gets zero A frames
+  client.disconnect()
+  token = makeJwt('2002', 'jti-b1')
+  assert.equal(client.pendingCount, 0)
+  client.connect()
+  sockets[1].open()
+  authenticateSocket(sockets[1])
+  assert.equal(sockets[1].sent.map(raw => JSON.parse(raw)).filter(f => f.type === 'msg.send').length, 0)
+
+  // Emit msg.push and msg.recall events on active socket
+  sockets[1].receive(frame('msg.push', { push_type: 'message', message: { msg_id: '301', seq: '1', conversation_id: '15' } }, 'push-1'))
+  sockets[1].receive(frame('msg.recall', { conversation_id: '15', recalled_msg_id: '301', recall_msg_id: '302', seq: '2' }, 'recall-1'))
+  assert.equal(pushes.length, 1)
+  assert.equal(recalls.length, 1)
+
+  // Switch back to account A: A's un-acked second message is preserved and replayed with original client_msg_id
+  client.disconnect()
+  token = makeJwt('1001', 'jti-a2')
+  assert.equal(client.pendingCount, 1)
+  client.connect()
+  sockets[2].open()
+  authenticateSocket(sockets[2])
+  const sentA2 = sockets[2].sent.map(raw => JSON.parse(raw)).filter(f => f.type === 'msg.send')
+  assert.deepEqual(sentA2.map(f => f.req_id), ['req-fifo-2'])
+  assert.deepEqual(sentA2.map(f => f.data.client_msg_id), ['c-fifo-2'])
+
+  sockets[2].receive(frame('msg.ack', { ...ack, client_msg_id: 'c-fifo-2', msg_id: '202', seq: '51', status: 'recalled', delivery_status: 'read' }, 'req-fifo-2'))
+  assert.equal(client.pendingCount, 0)
+  assert.deepEqual(acks, ['req-fifo-1:delivered:normal', 'req-fifo-2:read:recalled'])
+  client.disconnect()
+})
+
+it('closes socket and emits transport error when socket.send throws synchronously', () => {
+  const { client, sockets } = setup({ heartbeatMs: 100 })
+  const errors: string[] = []
+  const closes: number[] = []
+  client.on('error', err => errors.push(err.kind))
+  client.on('close', ev => closes.push(ev.code))
+
+  client.connect()
+  sockets[0].open()
+  authenticateSocket(sockets[0])
+
+  sockets[0].send = () => {
+    throw new Error('socket write failure')
+  }
+  mock.timers.tick(100)
+  assert.deepEqual(errors, ['transport'])
+  assert.equal(closes.length, 1)
+  client.disconnect()
+})

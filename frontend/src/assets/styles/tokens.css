@@ -1,0 +1,61 @@
+:root {
+  /* Core Enterprise Monochrome Palette */
+  --im-bg-page: #f5f6f8;
+  --im-bg-surface: #ffffff;
+  --im-bg-sidebar: #f5f6f8;
+  --im-bg-rail: #111827;
+  --im-bg-hover: #eceef2;
+  --im-bg-active: #e5e7eb;
+  --im-bg-subtle: #f9fafb;
+
+  /* Typography */
+  --im-text-primary: #111827;
+  --im-text-secondary: #4b5563;
+  --im-text-muted: #6b7280;
+  --im-text-inverse: #ffffff;
+
+  /* Borders */
+  --im-border-light: #eceef2;
+  --im-border-base: #e5e7eb;
+  --im-border-strong: #d1d5db;
+
+  /* Minimal Semantic Accents */
+  --im-accent-primary: #2563eb;
+  --im-accent-primary-hover: #1d4ed8;
+  --im-accent-primary-soft: #eff6ff;
+  --im-status-online: #10b981;
+  --im-status-offline: #9ca3af;
+  --im-status-unread: #ef4444;
+  --im-status-warning: #d97706;
+
+  /* Layout Dimensions */
+  --im-rail-width: 64px;
+  --im-list-width: 300px;
+  --im-header-height: 60px;
+
+  /* Radius & Elevation */
+  --im-radius-sm: 4px;
+  --im-radius-md: 8px;
+  --im-radius-lg: 12px;
+  --im-shadow-sm: 0 1px 2px rgba(17, 24, 39, 0.05);
+  --im-shadow-md: 0 4px 16px rgba(17, 24, 39, 0.08);
+
+  /* Element Plus Theme Alignment */
+  --el-color-primary: #111827;
+  --el-color-primary-light-3: #374151;
+  --el-color-primary-light-5: #4b5563;
+  --el-color-primary-light-7: #9ca3af;
+  --el-color-primary-light-8: #d1d5db;
+  --el-color-primary-light-9: #f3f4f6;
+  --el-color-primary-dark-2: #030712;
+  --el-color-success: #10b981;
+  --el-color-danger: #ef4444;
+  --el-color-warning: #d97706;
+  --el-border-color: #e5e7eb;
+  --el-border-color-light: #eceef2;
+  --el-bg-color: #ffffff;
+  --el-text-color-primary: #111827;
+  --el-text-color-regular: #4b5563;
+  --el-text-color-secondary: #6b7280;
+  --el-border-radius-base: 6px;
+}
