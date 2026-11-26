@@ -89,7 +89,20 @@ type frameError struct {
 }
 
 func errorFrame(env envelope, failure *errcode.Error) frame {
-	return outgoing("error", env.ReqID, frameError{failure.Code, failure.Message, failure.Code == errcode.ErrWSInternalError.Code, env.Type, env.ReqID})
+	return outgoing("error", env.ReqID, frameError{failure.Code, failure.Message, isRetryableWSError(failure.Code), env.Type, env.ReqID})
+}
+
+func isRetryableWSError(code int) bool {
+	switch code {
+	case errcode.ErrWSInternalError.Code,
+		errcode.ErrMessageInProgress.Code,
+		errcode.ErrStreamUnavailable.Code,
+		errcode.ErrMySQLUnavailable.Code,
+		errcode.ErrRedisUnavailable.Code:
+		return true
+	default:
+		return false
+	}
 }
 
 func noticeFrame(user, session uint64, event string) frame {

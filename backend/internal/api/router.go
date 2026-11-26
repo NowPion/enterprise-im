@@ -26,6 +26,13 @@ type Stage4Dependencies struct {
 	FriendController  *controller.FriendController
 }
 
+// Stage6ChatDependencies holds the shared JWT authentication middleware and Stage 6 chat controllers.
+type Stage6ChatDependencies struct {
+	JWTAuth                gin.HandlerFunc
+	ConversationController *controller.ConversationController
+	MessageController      *controller.MessageController
+}
+
 // NewRouter builds the Gin engine with global middlewares and /healthz route.
 // Stage 4 routes can be mounted via RegisterStage4Routes, NewRouterWithStage4, or per-module Register*Routes helpers.
 func NewRouter(cfg *config.Config, log *slog.Logger, healthCtrl *controller.HealthController) *gin.Engine {
@@ -49,7 +56,15 @@ func NewRouter(cfg *config.Config, log *slog.Logger, healthCtrl *controller.Heal
 	r.Use(middleware.AccessLogger(log))
 	r.Use(middleware.Recovery(log))
 	r.Use(middleware.CORS(allowedOrigins))
-	r.Use(middleware.MaxBodySize(maxBodyBytes))
+	defaultBodyLimit := middleware.MaxBodySize(maxBodyBytes)
+	r.Use(func(c *gin.Context) {
+		if c.Request != nil && c.Request.Method == http.MethodPost &&
+			(c.Request.URL.Path == "/api/v1/uploads" || c.Request.URL.Path == "/api/v1/me/avatar") {
+			c.Next()
+			return
+		}
+		defaultBodyLimit(c)
+	})
 
 	r.NoRoute(func(c *gin.Context) {
 		errcode.FailWithStatus(c, http.StatusNotFound, errcode.ErrInvalidValue.WithMessage("endpoint not found"), nil)
@@ -96,4 +111,13 @@ func NewRouterWithStage4(
 	r := NewRouter(cfg, log, healthCtrl)
 	RegisterStage4Routes(r, deps)
 	return r
+}
+
+// RegisterStage6ChatRoutes mounts Stage 6 conversation and message routes onto r
+// using the shared JWT authentication middleware.
+func RegisterStage6ChatRoutes(r gin.IRouter, deps Stage6ChatDependencies) {
+	if r == nil {
+		return
+	}
+	RegisterConversationRoutes(r, deps.JWTAuth, deps.ConversationController, deps.MessageController)
 }

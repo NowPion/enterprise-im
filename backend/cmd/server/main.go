@@ -168,8 +168,16 @@ func buildRouter(
 	userPresenceRepo := repository.NewUserPresenceRepository(rdb)
 	friendRepo := repository.NewFriendshipRepository(db, rdb)
 	friendReqRepo := repository.NewGormFriendRequestRepository(db)
+	assetRepo := repository.NewAssetRepository(db)
+	convRepo := repository.NewConversationRepository(db)
+	msgRepo := repository.NewMessageRepository(db, rdb)
 	seqAllocator := repository.NewRedisSeqAllocator(rdb, 5*time.Second)
 	frPresence := repository.NewRedisPresenceChecker(rdb)
+
+	uploadStorage, err := service.NewDiskStorage(cfg.Upload.Dir, cfg.Upload.TempDir)
+	if err != nil {
+		return nil, fmt.Errorf("init upload storage: %w", err)
+	}
 
 	authState := middleware.NewAuthStateStore(authRepo, sessionRepo)
 	jwtAuth := middleware.JWTAuth(jwtMgr, authState)
@@ -181,6 +189,12 @@ func buildRouter(
 	userSvc := service.NewUserService(userRepo, userPresenceRepo, log)
 	friendReqSvc := service.NewFriendRequestService(friendReqRepo, friendRepo, seqAllocator, frPresence, idGen, log)
 	friendSvc := service.NewFriendService(friendRepo, log)
+	uploadSvc := service.NewUploadService(assetRepo, userPresenceRepo, uploadStorage, cfg.Upload, authCfg.JWT.Secret, log)
+	convSvc := service.NewConversationService(convRepo, friendRepo, log)
+	msgSvc := service.NewMessageService(convRepo, msgRepo, seqAllocator, idGen, hub, cfg.Chat.RecallWindow, log)
+	hub.SetChatService(msgSvc)
+	groupRepo := repository.NewGormGroupRepository(db)
+	groupSvc := service.NewGroupService(groupRepo, seqAllocator, frPresence, idGen, hub, log)
 
 	router := api.NewRouterWithStage4(cfg, log, healthCtrl, api.Stage4Dependencies{
 		JWTAuth:           jwtAuth,
@@ -189,6 +203,13 @@ func buildRouter(
 		FriendRequestCtrl: controller.NewFriendRequestController(friendReqSvc),
 		FriendController:  controller.NewFriendController(friendSvc),
 	})
+	api.RegisterUploadRoutes(router, jwtAuth, controller.NewUploadController(uploadSvc))
+	api.RegisterStage6ChatRoutes(router, api.Stage6ChatDependencies{
+		JWTAuth:                jwtAuth,
+		ConversationController: controller.NewConversationController(convSvc),
+		MessageController:      controller.NewMessageController(msgSvc),
+	})
+	api.RegisterGroupRoutes(router, jwtAuth, controller.NewGroupController(groupSvc))
 	api.RegisterWSRoute(router, cfg, hub)
 	return &serverRouter{Engine: router, hub: hub}, nil
 }

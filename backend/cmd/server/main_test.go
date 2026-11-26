@@ -262,6 +262,7 @@ func TestBuildRouterMountsHealthzAndAllStage4Routes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
+	cfg.Upload.Dir = t.TempDir()
 	authCfg, err := config.LoadAuthConfig("../../configs/config.yaml")
 	if err != nil {
 		t.Fatalf("load auth config: %v", err)
@@ -318,10 +319,45 @@ func TestBuildRouterMountsHealthzAndAllStage4Routes(t *testing.T) {
 		"GET /api/v1/friends",
 		"PATCH /api/v1/friends/:friend_id",
 		"DELETE /api/v1/friends/:friend_id",
+		"POST /api/v1/uploads",
+		"GET /api/v1/uploads/:asset_id",
+		"GET /api/v1/uploads/:asset_id/download",
+		"DELETE /api/v1/uploads/:asset_id",
+		"POST /api/v1/me/avatar",
+		"GET /api/v1/conversations",
+		"GET /api/v1/conversations/:conversation_id",
+		"PATCH /api/v1/conversations/:conversation_id/settings",
+		"GET /api/v1/conversations/:conversation_id/members",
+		"GET /api/v1/conversations/:conversation_id/messages",
+		"GET /api/v1/conversations/:conversation_id/sync",
+		"POST /api/v1/conversations/:conversation_id/messages",
+		"POST /api/v1/conversations/:conversation_id/messages/:msg_id/recall",
+		"POST /api/v1/groups",
+		"GET /api/v1/groups",
+		"GET /api/v1/groups/:group_id",
+		"PATCH /api/v1/groups/:group_id",
+		"DELETE /api/v1/groups/:group_id",
+		"GET /api/v1/groups/:group_id/members",
+		"POST /api/v1/groups/:group_id/members",
+		"DELETE /api/v1/groups/:group_id/members/:user_id",
+		"PATCH /api/v1/groups/:group_id/members/:user_id",
+		"PATCH /api/v1/groups/:group_id/members/:user_id/role",
+		"POST /api/v1/groups/:group_id/leave",
+		"POST /api/v1/groups/:group_id/transfer",
+		"GET /api/v1/groups/:group_id/audit",
 	}
 	for _, key := range expectedRoutes {
 		if !registered[key] {
 			t.Fatalf("missing expected route %q in router.Routes()", key)
+		}
+	}
+	for _, forbidden := range []string{
+		"POST /api/v1/conversations/:conversation_id/read",
+		"POST /api/v1/conversations/:conversation_id/delivered",
+		"GET /api/v1/conversations/:conversation_id/messages/:msg_id/receipts",
+	} {
+		if registered[forbidden] {
+			t.Fatalf("stage 7 route %q must not be registered in stage 6", forbidden)
 		}
 	}
 
@@ -339,6 +375,32 @@ func TestBuildRouterMountsHealthzAndAllStage4Routes(t *testing.T) {
 		{http.MethodGet, "/api/v1/friends"},
 		{http.MethodPatch, "/api/v1/friends/1"},
 		{http.MethodDelete, "/api/v1/friends/1"},
+		{http.MethodPost, "/api/v1/uploads"},
+		{http.MethodGet, "/api/v1/uploads/550e8400-e29b-41d4-a716-446655440000"},
+		{http.MethodGet, "/api/v1/uploads/550e8400-e29b-41d4-a716-446655440000/download"},
+		{http.MethodDelete, "/api/v1/uploads/550e8400-e29b-41d4-a716-446655440000"},
+		{http.MethodPost, "/api/v1/me/avatar"},
+		{http.MethodGet, "/api/v1/conversations"},
+		{http.MethodGet, "/api/v1/conversations/1"},
+		{http.MethodPatch, "/api/v1/conversations/1/settings"},
+		{http.MethodGet, "/api/v1/conversations/1/members"},
+		{http.MethodGet, "/api/v1/conversations/1/messages"},
+		{http.MethodGet, "/api/v1/conversations/1/sync"},
+		{http.MethodPost, "/api/v1/conversations/1/messages"},
+		{http.MethodPost, "/api/v1/conversations/1/messages/1/recall"},
+		{http.MethodPost, "/api/v1/groups"},
+		{http.MethodGet, "/api/v1/groups"},
+		{http.MethodGet, "/api/v1/groups/1"},
+		{http.MethodPatch, "/api/v1/groups/1"},
+		{http.MethodDelete, "/api/v1/groups/1"},
+		{http.MethodGet, "/api/v1/groups/1/members"},
+		{http.MethodPost, "/api/v1/groups/1/members"},
+		{http.MethodDelete, "/api/v1/groups/1/members/2"},
+		{http.MethodPatch, "/api/v1/groups/1/members/me"},
+		{http.MethodPatch, "/api/v1/groups/1/members/2/role"},
+		{http.MethodPost, "/api/v1/groups/1/leave"},
+		{http.MethodPost, "/api/v1/groups/1/transfer"},
+		{http.MethodGet, "/api/v1/groups/1/audit"},
 	}
 	for _, tc := range protectedSamples {
 		w := httptest.NewRecorder()
