@@ -18,9 +18,9 @@ import (
 	"enterprise-im/backend/internal/repository"
 )
 
-// inMemoryFriendStore models MySQL friendships/users/conversations/conversation_members
+// inMemoryFriendsStore models MySQL friendships/users/conversations/conversation_members
 // and Redis presence/route state in memory for deterministic unit testing without mocking production code.
-type inMemoryFriendStore struct {
+type inMemoryFriendsStore struct {
 	mu                  sync.Mutex
 	nextFriendshipID    uint64
 	nextConversationID  uint64
@@ -43,8 +43,8 @@ type inMemoryFriendStore struct {
 	forceRedisErr error
 }
 
-func newInMemoryFriendStore() *inMemoryFriendStore {
-	return &inMemoryFriendStore{
+func newInMemoryFriendsStore() *inMemoryFriendsStore {
+	return &inMemoryFriendsStore{
 		nextFriendshipID:    1,
 		nextConversationID:  90001,
 		users:               make(map[uint64]model.User),
@@ -57,13 +57,13 @@ func newInMemoryFriendStore() *inMemoryFriendStore {
 	}
 }
 
-func (m *inMemoryFriendStore) seedUser(u model.User) {
+func (m *inMemoryFriendsStore) seedUser(u model.User) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.users[u.ID] = u
 }
 
-func (m *inMemoryFriendStore) seedFriendshipAndConv(uA, uB uint64) uint64 {
+func (m *inMemoryFriendsStore) seedFriendshipAndConv(uA, uB uint64) uint64 {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	now := time.Now().UTC()
@@ -121,7 +121,7 @@ func (m *inMemoryFriendStore) seedFriendshipAndConv(uA, uB uint64) uint64 {
 	return conv.ID
 }
 
-func (m *inMemoryFriendStore) ListActiveFriendships(_ context.Context, userID uint64, cursorID uint64, limit int) ([]model.Friendship, error) {
+func (m *inMemoryFriendsStore) ListActiveFriendships(_ context.Context, userID uint64, cursorID uint64, limit int) ([]model.Friendship, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.forceDBErr != nil {
@@ -146,7 +146,7 @@ func (m *inMemoryFriendStore) ListActiveFriendships(_ context.Context, userID ui
 	return matched, nil
 }
 
-func (m *inMemoryFriendStore) BatchGetUsersByIDs(_ context.Context, userIDs []uint64) (map[uint64]model.User, error) {
+func (m *inMemoryFriendsStore) BatchGetUsersByIDs(_ context.Context, userIDs []uint64) (map[uint64]model.User, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.batchUsersCalls++
@@ -162,7 +162,7 @@ func (m *inMemoryFriendStore) BatchGetUsersByIDs(_ context.Context, userIDs []ui
 	return out, nil
 }
 
-func (m *inMemoryFriendStore) BatchGetSingleConversationsByDirectKeys(_ context.Context, directKeys []string) (map[string]model.Conversation, error) {
+func (m *inMemoryFriendsStore) BatchGetSingleConversationsByDirectKeys(_ context.Context, directKeys []string) (map[string]model.Conversation, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.batchConversationsCalls++
@@ -178,7 +178,7 @@ func (m *inMemoryFriendStore) BatchGetSingleConversationsByDirectKeys(_ context.
 	return out, nil
 }
 
-func (m *inMemoryFriendStore) GetOnlineStatusBatch(_ context.Context, userIDs []uint64) (map[uint64]bool, error) {
+func (m *inMemoryFriendsStore) GetOnlineStatusBatch(_ context.Context, userIDs []uint64) (map[uint64]bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.batchOnlineCalls++
@@ -208,7 +208,7 @@ func (m *inMemoryFriendStore) GetOnlineStatusBatch(_ context.Context, userIDs []
 	return out, nil
 }
 
-func (m *inMemoryFriendStore) AreActiveFriends(_ context.Context, userA, userB uint64) (bool, error) {
+func (m *inMemoryFriendsStore) AreActiveFriends(_ context.Context, userA, userB uint64) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.forceDBErr != nil {
@@ -219,7 +219,7 @@ func (m *inMemoryFriendStore) AreActiveFriends(_ context.Context, userA, userB u
 	return ok1 && ok2 && ab.Status == model.FriendshipStatusActive && ba.Status == model.FriendshipStatusActive, nil
 }
 
-func (m *inMemoryFriendStore) UpdateRemark(_ context.Context, userID, friendID uint64, remark string) error {
+func (m *inMemoryFriendsStore) UpdateRemark(_ context.Context, userID, friendID uint64, remark string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.forceDBErr != nil {
@@ -241,7 +241,7 @@ func (m *inMemoryFriendStore) UpdateRemark(_ context.Context, userID, friendID u
 	return nil
 }
 
-func (m *inMemoryFriendStore) DeactivateBidirectionalFriendship(_ context.Context, userID, friendID uint64) (repository.DeleteFriendshipOutcome, error) {
+func (m *inMemoryFriendsStore) DeactivateBidirectionalFriendship(_ context.Context, userID, friendID uint64) (repository.DeleteFriendshipOutcome, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.forceDBErr != nil {
@@ -287,7 +287,7 @@ func (m *inMemoryFriendStore) DeactivateBidirectionalFriendship(_ context.Contex
 	return outcome, nil
 }
 
-func (m *inMemoryFriendStore) FindSingleConversationByDirectKey(_ context.Context, directKey string) (*model.Conversation, error) {
+func (m *inMemoryFriendsStore) FindSingleConversationByDirectKey(_ context.Context, directKey string) (*model.Conversation, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.forceDBErr != nil {
@@ -303,7 +303,7 @@ func (m *inMemoryFriendStore) FindSingleConversationByDirectKey(_ context.Contex
 
 func TestFriendServiceListBatchPaginationAndPresence(t *testing.T) {
 	log, _ := logger.New(config.LogConfig{Level: "error", Format: "json"}, nil)
-	store := newInMemoryFriendStore()
+	store := newInMemoryFriendsStore()
 	svc := NewFriendService(store, log)
 
 	lastOnline := time.Date(2026, 11, 26, 6, 30, 0, 123000000, time.FixedZone("CST", 8*3600))
@@ -383,7 +383,7 @@ func TestFriendServiceListBatchPaginationAndPresence(t *testing.T) {
 
 func TestFriendServiceRemarkSingleSideAndDeleteBidirectional(t *testing.T) {
 	log, _ := logger.New(config.LogConfig{Level: "error", Format: "json"}, nil)
-	store := newInMemoryFriendStore()
+	store := newInMemoryFriendsStore()
 	svc := NewFriendService(store, log)
 
 	store.seedUser(model.User{ID: 10001, Username: "alice", Nickname: "Alice"})
@@ -467,7 +467,7 @@ func TestFriendServiceRemarkSingleSideAndDeleteBidirectional(t *testing.T) {
 
 func TestFriendServiceInfrastructureErrorsAndCursorValidation(t *testing.T) {
 	log, _ := logger.New(config.LogConfig{Level: "error", Format: "json"}, nil)
-	store := newInMemoryFriendStore()
+	store := newInMemoryFriendsStore()
 	svc := NewFriendService(store, log)
 	store.seedUser(model.User{ID: 10002, Username: "bob", Nickname: "Bob"})
 	store.seedFriendshipAndConv(10001, 10002)

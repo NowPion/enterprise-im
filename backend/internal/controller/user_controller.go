@@ -11,6 +11,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"enterprise-im/backend/internal/middleware"
 	"enterprise-im/backend/internal/pkg/errcode"
 	"enterprise-im/backend/internal/service"
 )
@@ -187,6 +188,16 @@ func parsePatchMeRequest(c *gin.Context) (patchMeRequest, *errcode.Error) {
 func extractAuthIdentity(c *gin.Context) (uint64, string, string, *errcode.Error) {
 	if c == nil {
 		return 0, "", "", errcode.ErrAccessTokenInvalid
+	}
+	if authCtx, ok := middleware.GetAuthContext(c); ok && authCtx.UserID > 0 {
+		if errcode.GetUserID(c) == "" {
+			errcode.SetUserID(c, strconv.FormatUint(authCtx.UserID, 10))
+		}
+		sessionID := ""
+		if authCtx.SessionID > 0 {
+			sessionID = strconv.FormatUint(authCtx.SessionID, 10)
+		}
+		return authCtx.UserID, sessionID, strings.TrimSpace(authCtx.DeviceID), nil
 	}
 	userID, ok := readContextUint64(c, errcode.ContextKeyUserID)
 	if !ok || userID == 0 {

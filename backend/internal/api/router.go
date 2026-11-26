@@ -12,7 +12,17 @@ import (
 	"enterprise-im/backend/internal/pkg/errcode"
 )
 
-// NewRouter builds the Gin engine with global middlewares and Stage 3 routes only.
+// Stage4Dependencies holds the shared JWT authentication middleware and Stage 4 controllers.
+type Stage4Dependencies struct {
+	JWTAuth           gin.HandlerFunc
+	AuthController    *controller.AuthController
+	UserController    *controller.UserController
+	FriendRequestCtrl *controller.FriendRequestController
+	FriendController  *controller.FriendController
+}
+
+// NewRouter builds the Gin engine with global middlewares and /healthz route.
+// Stage 4 routes can be mounted via RegisterStage4Routes, NewRouterWithStage4, or per-module Register*Routes helpers.
 func NewRouter(cfg *config.Config, log *slog.Logger, healthCtrl *controller.HealthController) *gin.Engine {
 	if cfg != nil && cfg.App.IsProduction() {
 		gin.SetMode(gin.ReleaseMode)
@@ -47,5 +57,38 @@ func NewRouter(cfg *config.Config, log *slog.Logger, healthCtrl *controller.Heal
 		r.GET("/healthz", healthCtrl.Check)
 	}
 
+	return r
+}
+
+// RegisterStage4Routes mounts auth, user, friend-request, and friend routes onto r
+// using a single shared JWT authentication middleware.
+func RegisterStage4Routes(r gin.IRouter, deps Stage4Dependencies) {
+	if r == nil {
+		return
+	}
+	jwtAuth := deps.JWTAuth
+	if jwtAuth == nil {
+		jwtAuth = func(c *gin.Context) {
+			errcode.Fail(c, errcode.ErrAccessTokenInvalid)
+			c.Abort()
+		}
+	}
+
+	RegisterAuthRoutes(r, deps.AuthController, jwtAuth)
+	RegisterUserRoutes(r, jwtAuth, deps.UserController)
+	RegisterFriendRequestRoutes(r, jwtAuth, deps.FriendRequestCtrl)
+	RegisterFriendRoutes(r, jwtAuth, deps.FriendController)
+}
+
+// NewRouterWithStage4 builds the Gin engine with global middlewares, /healthz,
+// and all Stage 4 REST routes wired to the shared JWT middleware.
+func NewRouterWithStage4(
+	cfg *config.Config,
+	log *slog.Logger,
+	healthCtrl *controller.HealthController,
+	deps Stage4Dependencies,
+) *gin.Engine {
+	r := NewRouter(cfg, log, healthCtrl)
+	RegisterStage4Routes(r, deps)
 	return r
 }

@@ -3,17 +3,25 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/redis/go-redis/v9"
+	"gorm.io/gorm"
+
 	"enterprise-im/backend/internal/config"
+	"enterprise-im/backend/internal/pkg/errcode"
+	pkgjwt "enterprise-im/backend/internal/pkg/jwt"
 	"enterprise-im/backend/internal/pkg/logger"
+	"enterprise-im/backend/internal/pkg/snowflake"
 )
 
 // pipeListener implements net.Listener over in-memory net.Pipe connections so
@@ -219,6 +227,132 @@ func TestOrderedGracefulShutdownDrainsInFlightAndRunsStepsInOrder(t *testing.T) 
 	} {
 		if !strings.Contains(logs, marker) {
 			t.Fatalf("missing shutdown log marker %q in logs: %s", marker, logs)
+		}
+	}
+}
+
+func TestLoggedNoopSessionRevokeHook(t *testing.T) {
+	var logBuf bytes.Buffer
+	log, err := logger.New(config.LogConfig{Level: "info", Format: "json"}, &logBuf)
+	if err != nil {
+		t.Fatalf("new logger: %v", err)
+	}
+
+	hook := newLoggedNoopSessionRevokeHook(log)
+	if err := hook(context.Background(), 10001, []uint64{10, 20}, "logout"); err != nil {
+		t.Fatalf("expected nil error from noop hook, got %v", err)
+	}
+
+	out := logBuf.String()
+	for _, needle := range []string{
+		`"auth_session_revoke_hook_noop"`,
+		`"user_id":10001`,
+		`"session_count":2`,
+		`"reason":"logout"`,
+		`"no active websocket hub in stage 4"`,
+	} {
+		if !strings.Contains(out, needle) {
+			t.Fatalf("expected %s in hook log output: %s", needle, out)
+		}
+	}
+}
+
+func TestBuildRouterMountsHealthzAndAllStage4Routes(t *testing.T) {
+	cfg, err := config.Load("../../configs/config.yaml")
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	authCfg, err := config.LoadAuthConfig("../../configs/config.yaml")
+	if err != nil {
+		t.Fatalf("load auth config: %v", err)
+	}
+	log, err := logger.New(config.LogConfig{Level: "error", Format: "json"}, nil)
+	if err != nil {
+		t.Fatalf("new logger: %v", err)
+	}
+	idGen, err := snowflake.NewGenerator(cfg.Snowflake.NodeID)
+	if err != nil {
+		t.Fatalf("snowflake generator: %v", err)
+	}
+	jwtMgr, err := pkgjwt.NewManager(authCfg.JWT)
+	if err != nil {
+		t.Fatalf("jwt manager: %v", err)
+	}
+
+	db := &gorm.DB{}
+	rdb := redis.NewClient(&redis.Options{Addr: "127.0.0.1:1"})
+	defer func() { _ = rdb.Close() }()
+
+	if _, err := buildRouter(nil, authCfg, log, db, rdb, idGen, jwtMgr); err == nil {
+		t.Fatal("expected buildRouter to fail when cfg is nil")
+	}
+	if _, err := buildRouter(cfg, nil, log, db, rdb, idGen, jwtMgr); err == nil {
+		t.Fatal("expected buildRouter to fail when authCfg is nil")
+	}
+
+	router, err := buildRouter(cfg, authCfg, log, db, rdb, idGen, jwtMgr)
+	if err != nil {
+		t.Fatalf("buildRouter failed: %v", err)
+	}
+
+	registered := make(map[string]bool)
+	for _, rt := range router.Routes() {
+		registered[rt.Method+" "+rt.Path] = true
+	}
+
+	expectedRoutes := []string{
+		"GET /healthz",
+		"POST /api/v1/auth/register",
+		"POST /api/v1/auth/login",
+		"POST /api/v1/auth/refresh",
+		"POST /api/v1/auth/logout",
+		"PUT /api/v1/me/password",
+		"GET /api/v1/me",
+		"PATCH /api/v1/me",
+		"GET /api/v1/users/search",
+		"POST /api/v1/friend-requests",
+		"GET /api/v1/friend-requests",
+		"POST /api/v1/friend-requests/:id/accept",
+		"POST /api/v1/friend-requests/:id/reject",
+		"POST /api/v1/friend-requests/:id/cancel",
+		"GET /api/v1/friends",
+		"PATCH /api/v1/friends/:friend_id",
+		"DELETE /api/v1/friends/:friend_id",
+	}
+	for _, key := range expectedRoutes {
+		if !registered[key] {
+			t.Fatalf("missing expected route %q in router.Routes()", key)
+		}
+	}
+
+	protectedSamples := [][2]string{
+		{http.MethodPost, "/api/v1/auth/logout"},
+		{http.MethodPut, "/api/v1/me/password"},
+		{http.MethodGet, "/api/v1/me"},
+		{http.MethodPatch, "/api/v1/me"},
+		{http.MethodGet, "/api/v1/users/search?q=alice"},
+		{http.MethodPost, "/api/v1/friend-requests"},
+		{http.MethodGet, "/api/v1/friend-requests?direction=received"},
+		{http.MethodPost, "/api/v1/friend-requests/1/accept"},
+		{http.MethodPost, "/api/v1/friend-requests/1/reject"},
+		{http.MethodPost, "/api/v1/friend-requests/1/cancel"},
+		{http.MethodGet, "/api/v1/friends"},
+		{http.MethodPatch, "/api/v1/friends/1"},
+		{http.MethodDelete, "/api/v1/friends/1"},
+	}
+	for _, tc := range protectedSamples {
+		w := httptest.NewRecorder()
+		req, _ := http.NewRequest(tc[0], tc[1], nil)
+		router.ServeHTTP(w, req)
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("%s %s expected 401 without token, got %d body=%s", tc[0], tc[1], w.Code, w.Body.String())
+		}
+		var env errcode.Envelope
+		if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
+			t.Fatalf("unmarshal 401 envelope: %v", err)
+		}
+		if env.Code != errcode.ErrAccessTokenInvalid.Code {
+			t.Fatalf("%s %s expected 11001, got %d", tc[0], tc[1], env.Code)
 		}
 	}
 }

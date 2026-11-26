@@ -26,7 +26,7 @@ func NewFriendController(friendSvc *service.FriendService) *FriendController {
 
 // List handles GET /api/v1/friends.
 func (h *FriendController) List(c *gin.Context) {
-	userID, authErr := extractAuthenticatedUserID(c)
+	userID, authErr := extractFriendAuthUserID(c)
 	if authErr != nil {
 		errcode.Fail(c, authErr)
 		return
@@ -53,7 +53,7 @@ func (h *FriendController) List(c *gin.Context) {
 
 // UpdateRemark handles PATCH /api/v1/friends/:friend_id.
 func (h *FriendController) UpdateRemark(c *gin.Context) {
-	userID, authErr := extractAuthenticatedUserID(c)
+	userID, authErr := extractFriendAuthUserID(c)
 	if authErr != nil {
 		errcode.Fail(c, authErr)
 		return
@@ -89,7 +89,7 @@ func (h *FriendController) UpdateRemark(c *gin.Context) {
 
 // Delete handles DELETE /api/v1/friends/:friend_id.
 func (h *FriendController) Delete(c *gin.Context) {
-	userID, authErr := extractAuthenticatedUserID(c)
+	userID, authErr := extractFriendAuthUserID(c)
 	if authErr != nil {
 		errcode.Fail(c, authErr)
 		return
@@ -109,7 +109,7 @@ func (h *FriendController) Delete(c *gin.Context) {
 	errcode.OK(c, res)
 }
 
-func extractAuthenticatedUserID(c *gin.Context) (uint64, *errcode.Error) {
+func extractFriendAuthUserID(c *gin.Context) (uint64, *errcode.Error) {
 	if s := strings.TrimSpace(errcode.GetUserID(c)); s != "" {
 		uid, err := strconv.ParseUint(s, 10, 64)
 		if err != nil || uid == 0 {

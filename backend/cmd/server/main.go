@@ -13,9 +13,15 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/gin-gonic/gin"
+	"github.com/redis/go-redis/v9"
+	"gorm.io/gorm"
+
 	"enterprise-im/backend/internal/api"
 	"enterprise-im/backend/internal/config"
 	"enterprise-im/backend/internal/controller"
+	"enterprise-im/backend/internal/middleware"
+	pkgjwt "enterprise-im/backend/internal/pkg/jwt"
 	"enterprise-im/backend/internal/pkg/logger"
 	"enterprise-im/backend/internal/pkg/snowflake"
 	"enterprise-im/backend/internal/repository"
@@ -45,15 +51,28 @@ func run(configPath string) error {
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
+	authCfg, err := config.LoadAuthConfig(configPath)
+	if err != nil {
+		return fmt.Errorf("load auth config: %w", err)
+	}
 
 	log, err := logger.InitGlobal(cfg.Log)
 	if err != nil {
 		return fmt.Errorf("init logger: %w", err)
 	}
-	log.Info("configuration_loaded", slog.Any("config", cfg.RedactedSummary()))
+	log.Info("configuration_loaded",
+		slog.Any("config", cfg.RedactedSummary()),
+		slog.Any("auth", authCfg.RedactedSummary()),
+	)
 
-	if _, err := snowflake.NewGenerator(cfg.Snowflake.NodeID); err != nil {
+	idGen, err := snowflake.NewGenerator(cfg.Snowflake.NodeID)
+	if err != nil {
 		return fmt.Errorf("init snowflake generator: %w", err)
+	}
+
+	jwtMgr, err := pkgjwt.NewManager(authCfg.JWT)
+	if err != nil {
+		return fmt.Errorf("init jwt manager: %w", err)
 	}
 
 	db, err := repository.NewMySQL(cfg.MySQL, log)
@@ -69,14 +88,12 @@ func run(configPath string) error {
 	}
 	log.Info("redis_connected", slog.String("addr", cfg.Redis.Addr), slog.Int("db", cfg.Redis.DB))
 
-	healthSvc := service.NewHealthService(
-		func(ctx context.Context) error { return repository.PingMySQL(ctx, db) },
-		func(ctx context.Context) error { return repository.PingRedis(ctx, rdb) },
-		cfg.Health.ProbeTimeout,
-		log,
-	)
-	healthCtrl := controller.NewHealthController(healthSvc)
-	router := api.NewRouter(cfg, log, healthCtrl)
+	router, err := buildRouter(cfg, authCfg, log, db, rdb, idGen, jwtMgr)
+	if err != nil {
+		_ = repository.CloseRedis(rdb)
+		_ = repository.CloseMySQL(db)
+		return fmt.Errorf("build router: %w", err)
+	}
 
 	ln, err := net.Listen("tcp", cfg.Server.Addr)
 	if err != nil {
@@ -95,11 +112,11 @@ func run(configPath string) error {
 
 	hooks := ShutdownHooks{
 		NotifyAndCloseWS: func(context.Context) error {
-			log.Info("shutdown_ws_hook_noop", slog.String("reason", "no active websocket hub in stage 3"))
+			log.Info("shutdown_ws_hook_noop", slog.String("reason", "no active websocket hub in stage 4"))
 			return nil
 		},
 		DrainMQ: func(context.Context) error {
-			log.Info("shutdown_mq_hook_noop", slog.String("reason", "no active mq consumer in stage 3"))
+			log.Info("shutdown_mq_hook_noop", slog.String("reason", "no active mq consumer in stage 4"))
 			return nil
 		},
 		CloseDB:    func() error { return repository.CloseMySQL(db) },
@@ -110,6 +127,71 @@ func run(configPath string) error {
 	defer stop()
 
 	return serveAndShutdown(sigCtx, log, srv, ln, cfg.Server.ShutdownTimeout, hooks)
+}
+
+func buildRouter(
+	cfg *config.Config,
+	authCfg *config.AuthConfig,
+	log *slog.Logger,
+	db *gorm.DB,
+	rdb *redis.Client,
+	idGen *snowflake.Generator,
+	jwtMgr *pkgjwt.Manager,
+) (*gin.Engine, error) {
+	if cfg == nil || authCfg == nil || db == nil || rdb == nil || idGen == nil || jwtMgr == nil {
+		return nil, errors.New("server router dependencies must not be nil")
+	}
+	if log == nil {
+		log = slog.Default()
+	}
+
+	healthSvc := service.NewHealthService(
+		func(ctx context.Context) error { return repository.PingMySQL(ctx, db) },
+		func(ctx context.Context) error { return repository.PingRedis(ctx, rdb) },
+		cfg.Health.ProbeTimeout,
+		log,
+	)
+	healthCtrl := controller.NewHealthController(healthSvc)
+
+	authRepo := repository.NewAuthRepository(db)
+	sessionRepo := repository.NewSessionRepository(db, rdb)
+	userRepo := repository.NewUserRepository(db)
+	userPresenceRepo := repository.NewUserPresenceRepository(rdb)
+	friendRepo := repository.NewFriendshipRepository(db, rdb)
+	friendReqRepo := repository.NewGormFriendRequestRepository(db)
+	seqAllocator := repository.NewRedisSeqAllocator(rdb, 5*time.Second)
+	frPresence := repository.NewRedisPresenceChecker(rdb)
+
+	jwtAuth := middleware.JWTAuth(jwtMgr, middleware.NewAuthStateStore(authRepo, sessionRepo))
+	revokeHook := newLoggedNoopSessionRevokeHook(log)
+
+	authSvc := service.NewAuthServiceWithRepos(authRepo, sessionRepo, jwtMgr, authCfg, log, revokeHook)
+	userSvc := service.NewUserService(userRepo, userPresenceRepo, log)
+	friendReqSvc := service.NewFriendRequestService(friendReqRepo, friendRepo, seqAllocator, frPresence, idGen, log)
+	friendSvc := service.NewFriendService(friendRepo, log)
+
+	return api.NewRouterWithStage4(cfg, log, healthCtrl, api.Stage4Dependencies{
+		JWTAuth:           jwtAuth,
+		AuthController:    controller.NewAuthController(authSvc),
+		UserController:    controller.NewUserController(userSvc),
+		FriendRequestCtrl: controller.NewFriendRequestController(friendReqSvc),
+		FriendController:  controller.NewFriendController(friendSvc),
+	}), nil
+}
+
+func newLoggedNoopSessionRevokeHook(log *slog.Logger) service.SessionRevokeHook {
+	if log == nil {
+		log = slog.Default()
+	}
+	return func(ctx context.Context, userID uint64, sessionIDs []uint64, reason string) error {
+		log.InfoContext(ctx, "auth_session_revoke_hook_noop",
+			slog.Uint64("user_id", userID),
+			slog.Int("session_count", len(sessionIDs)),
+			slog.String("reason", reason),
+			slog.String("note", "no active websocket hub in stage 4"),
+		)
+		return service.NoopSessionRevokeHook(ctx, userID, sessionIDs, reason)
+	}
 }
 
 func serveAndShutdown(

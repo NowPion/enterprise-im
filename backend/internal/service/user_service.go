@@ -173,7 +173,7 @@ func (s *UserService) UpdateMe(ctx context.Context, input UpdateMeInput) (Update
 
 	updates := make(map[string]any, 2)
 	if input.Nickname != nil {
-		nick, bizErr := validateNickname(*input.Nickname)
+		nick, bizErr := validateUserNickname(*input.Nickname)
 		if bizErr != nil {
 			return UpdateMeResult{}, bizErr
 		}
@@ -300,7 +300,7 @@ func (s *UserService) SearchUsers(ctx context.Context, input SearchUsersInput) (
 	}, nil
 }
 
-func validateNickname(raw string) (string, *errcode.Error) {
+func validateUserNickname(raw string) (string, *errcode.Error) {
 	if !utf8.ValidString(raw) || strings.ContainsRune(raw, 0) {
 		return "", errcode.ErrInvalidValue.WithMessage("nickname contains invalid characters")
 	}
