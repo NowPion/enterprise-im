@@ -119,14 +119,27 @@ func (m *Manager) RefreshTTLSeconds() int64 {
 	return int64(m.refreshTTL.Seconds())
 }
 
+// NewJTI generates a fresh unique JWT ID string.
+func NewJTI() string {
+	return uuid.NewString()
+}
+
 // IssueAccessToken signs a new HS256 Access JWT bound to userID (sub), jti, sessionID, and exp.
 func (m *Manager) IssueAccessToken(userID, sessionID uint64, role string) (tokenString string, jti string, expiresAt time.Time, err error) {
+	return m.IssueAccessTokenWithJTI(userID, sessionID, role, NewJTI())
+}
+
+// IssueAccessTokenWithJTI signs a new HS256 Access JWT with a caller-provided JTI.
+func (m *Manager) IssueAccessTokenWithJTI(userID, sessionID uint64, role, jti string) (tokenString string, issuedJTI string, expiresAt time.Time, err error) {
 	if userID == 0 || sessionID == 0 {
 		return "", "", time.Time{}, fmt.Errorf("%w: userID and sessionID must be positive", ErrTokenInvalidClaims)
 	}
+	jti = strings.TrimSpace(jti)
+	if jti == "" {
+		jti = NewJTI()
+	}
 	now := m.nowFn().UTC()
 	expiresAt = now.Add(m.accessTTL)
-	jti = uuid.NewString()
 
 	claims := Claims{
 		SessionID: strconv.FormatUint(sessionID, 10),
