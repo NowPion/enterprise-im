@@ -81,9 +81,11 @@ function handleSharedClientReset(): void {
   resetChatStoresIfAvailable()
 }
 
-export async function reconcileChatOnReconnect(): Promise<void> {
+export async function reconcileChatOnReconnect(options: { force?: boolean } = {}): Promise<void> {
   if (syncInFlight) {
-    reconcileRequestedDuringFlight = true
+    if (options.force) {
+      reconcileRequestedDuringFlight = true
+    }
     return syncInFlight
   }
   if (!getActivePinia()) return
@@ -244,11 +246,7 @@ export function ensureChatRealtime(): WSClient | null {
     })
     unsubOpen = client.on('open', () => {
       hasReconciledCurrentOpen = false
-      if (syncInFlight) {
-        reconcileRequestedDuringFlight = true
-      } else {
-        void reconcileChatOnReconnect()
-      }
+      void reconcileChatOnReconnect({ force: true })
     })
     unsubClose = client.on('close', () => {
       hasReconciledCurrentOpen = false
