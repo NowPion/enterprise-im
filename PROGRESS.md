@@ -1,6 +1,6 @@
 # Enterprise IM 开发进度与阶段自检报告
 
-**当前阶段结论：第二阶段（数据库设计与 ER 图）已完成实测，待审阅合入 `main`**
+**当前阶段结论：第三阶段（后端基础工程搭建）已完成实测，待审阅合入 `main`**
 
 ---
 
@@ -10,88 +10,100 @@
 
 | 阶段 | 状态 | 基线 / 交付物摘要 |
 | --- | --- | --- |
-| 第一阶段：需求分析与技术架构设计 | **已合入 `main`**（`357340b`） | 已完成 `.gitignore`、[docs/architecture.md](docs/architecture.md) 与 [docs/api.md](docs/api.md)，并完成 4 项审阅阻塞项整改后正式合入 `main` 分支（`Merge branch 'agent/stage1-architecture'`） |
-| 第二阶段：数据库设计与 ER 图 | **已完成（待审阅合并）** | 已完成 [deploy/mysql/init.sql](deploy/mysql/init.sql)、[docs/er-diagram.md](docs/er-diagram.md) 与本阶段进度报告，并在真实 MySQL 8.0.44 容器与 `mermaid-cli`（`mmdc 12.2.0`）完成导入和渲染实测 |
-| 第三阶段：后端基础工程搭建 | 未开始 | 本阶段严格止步于数据库与文档交付，未编写 Go 业务代码 |
+| 第一阶段：需求分析与技术架构设计 | **已合入 `main`**（`357340b`） | 已完成 `.gitignore`、[docs/architecture.md](docs/architecture.md) 与 [docs/api.md](docs/api.md)，并正式合入 `main` 分支（`Merge branch 'agent/stage1-architecture'`） |
+| 第二阶段：数据库设计与 ER 图 | **已合入 `main`**（`78e7abe`） | 已完成 [deploy/mysql/init.sql](deploy/mysql/init.sql) 与 [docs/er-diagram.md](docs/er-diagram.md)，完成真实 MySQL 8.0.44 导入与 Mermaid ER 图渲染校验后正式合入 `main`（`Merge branch 'agent/stage2-database'`） |
+| 第三阶段：后端基础工程搭建 | **已完成（待审阅合并）** | 已完成 `backend/` 分层骨架、Viper 配置与环境变量覆盖、脱敏 `log/slog` 访问日志、全量 69 个冻结错误码与统一信封、Snowflake 生成器、12 张表 GORM 模型、真实 MySQL 8.0 / Redis 7 初始化、`/healthz` 实探与 5 步优雅关闭，并在真实容器依赖下全部实测通过 |
+| 第四阶段：用户认证与好友管理 | 未开始 | 本阶段严格止步于基础工程交付，未注册业务路由，未实现认证、业务 REST、WebSocket Hub 或 Redis Streams 消费者 |
 
 ---
 
-## 二、第二阶段已完成项与范围说明
+## 二、第三阶段已完成项与边界说明
 
 | 交付物 | 状态 | 覆盖内容摘要 |
 | --- | --- | --- |
-| [deploy/mysql/init.sql](deploy/mysql/init.sql) | 已完成 | 建立 `enterprise_im` 库（`InnoDB` / `utf8mb4` / `utf8mb4_0900_ai_ci`）；严格对齐 `PROJECT_GOALS.md` §六.3 落实核心十表（`users`、`user_sessions`、`friend_requests`、`friendships`、`groups`、`group_members`、`conversations`、`conversation_members`、`messages` Snowflake 非自增、`message_receipts`）；按冻结契约扩充 `assets`（媒体元数据、内部相对存储键、引用关系与删除拦截）与 `audit_logs`（append-only 不可变审计事件与多维过滤索引）；幂等写入本地开发管理员种子（`admin` / `Admin@123456`，真实 `bcrypt` `cost=10` 哈希） |
-| [docs/er-diagram.md](docs/er-diagram.md) | 已完成 | 完整收录 12 张表的 Mermaid `erDiagram`、`client_msg_id` / `msg_id` / `seq` 职责边界、全部 12 表字段/约束/索引详解、业务事务与访问控制不变式、查询优化与分表归档预留策略，以及默认本地开发管理员种子说明 |
-| [PROGRESS.md](PROGRESS.md) | 已完成 | 更新第一阶段已合入 `main`（`357340b`）的事实状态，记录第二阶段交付、Commit 清单、真实 MySQL 8.0 导入校验、Mermaid 渲染实测结果与第三阶段衔接事项 |
+| 模块与工程分层（`backend/`） | 已完成 | `go.mod` / `go.sum`（Go 1.26.0 / 工具链 1.26.3）、`cmd/server`、`configs/config.yaml`、`internal/{api,config,controller,service,repository,model,middleware}` 及 `internal/pkg/{errcode,logger,snowflake}`、`tests/`；Controller 仅负责校验调用与响应封装，未提前编写第四阶段及之后的业务路由与 WS Hub |
+| 配置管理与模板（[backend/configs/config.yaml](backend/configs/config.yaml)、[.env.example](.env.example)、[Makefile](Makefile)） | 已完成 | `internal/config` 基于 Viper 支持 YAML 加载、`IM_*` 与标准环境变量覆盖、`development`/`production` 模式区分及启动前参数校验；仓库仅保留空口令默认值与无真实密钥的 `.env.example` |
+| 结构化日志与脱敏（[backend/internal/pkg/logger/logger.go](backend/internal/pkg/logger/logger.go)） | 已完成 | 使用标准库 `log/slog`（支持 JSON/Text 与级别配置），内建敏感键脱敏（`password`、`token`、`authorization`、`cookie`、`dsn` 等）与 Header / Query 参数脱敏辅助函数 |
+| 冻结错误码与统一信封（[backend/internal/pkg/errcode/codes.go](backend/internal/pkg/errcode/codes.go)、[backend/internal/pkg/errcode/response.go](backend/internal/pkg/errcode/response.go)） | 已完成 | 完整集中实现 `docs/api.md` 冻结码表全部 69 个码（`0` 与 `10000`–`19004`），统一返回 `{code, message, data, request_id}` 并回写 `X-Request-ID`，错误信息不泄露路径、密码或 Token |
+| 中间件链路（[backend/internal/middleware](backend/internal/middleware)） | 已完成 | 按序装配 `RequestID`、`AccessLogger`（记录 `request_id`、`user_id`、`latency_ms`、结果 `code` 并脱敏认证头）、`Recovery`（Panic 恢复返回 `19004`）、`CORS`（Origin 白名单校验）与 `MaxBodySize`（超限返回 `10002`） |
+| 12 表 GORM 模型与 Snowflake（[backend/internal/model](backend/internal/model)、[backend/internal/pkg/snowflake/snowflake.go](backend/internal/pkg/snowflake/snowflake.go)） | 已完成 | 严格对齐 `deploy/mysql/init.sql` 12 张表：`messages.id` 显式配置 `autoIncrement:false` 且 `BeforeCreate` 拦截零值 ID；`assets.storage_key` / `thumbnail_key` 使用 `json:"-"` 禁止对外暴露；`audit_logs` 按 append-only 建模（无 `UpdatedAt`/`DeletedAt` 与 Update/Delete 业务钩子）；Snowflake 线程安全且拒绝超容忍度的时钟回拨 |
+| MySQL / Redis 真实连接与 `/healthz`（[backend/internal/repository](backend/internal/repository)、[backend/internal/service/health_service.go](backend/internal/service/health_service.go)、[backend/internal/controller/health_controller.go](backend/internal/controller/health_controller.go)） | 已完成 | 启动即真实 `Ping + SELECT 1` / `PING`，不可用时非 0 退出；`GET /healthz` 免鉴权并发实探 MySQL 与 Redis，成功返回 200 + `code=0` + `{status:"ok", mysql:"ok", redis:"ok", timestamp}`（UTC 毫秒级 RFC 3339） |
+| 优雅关闭（[backend/cmd/server/main.go](backend/cmd/server/main.go)） | 已完成 | 监听 `SIGINT`/`SIGTERM`，按序执行：① 停止接入新 HTTP 请求 → ② WS 通知关闭钩子（本阶段无连接空钩子）→ ③ MQ 停止拉取并排空钩子（本阶段无消费者空钩子）→ ④ 限时排空在途 HTTP 请求 → ⑤ 关闭 MySQL 与 Redis 连接池 |
+
+### `/healthz` 依赖失败与双失败错误码选择
+
+- 单项失败：MySQL 探活失败返回 HTTP `503` + 业务码 `19001`（`data.mysql="unavailable"`）；Redis 探活失败返回 HTTP `503` + 业务码 `19002`（`data.redis="unavailable"`）。
+- **双依赖同时失败选择**：当 MySQL 与 Redis 同时不可用时，返回 HTTP `503` 与冻结业务码 **`19001`（MySQL 不可用优先）**，同时在 `data` 中如实给出 `{"status":"unavailable","mysql":"unavailable","redis":"unavailable","timestamp":"..."}`。原因：MySQL 是系统持久化事实源且在冻结码表中 `19001` 排位优先于 `19002`，不发明新错误码。
 
 ### 活跃 Worktree / 分支状态
 
 | 项目 | 当前值 |
 | --- | --- |
-| 主仓库路径 | `/Users/niezidong/Projects/go`（`main` 基线 `357340b`） |
-| 当前 Worktree | `/Users/niezidong/.herdr/worktrees/go/agent-stage2-database` |
-| 当前分支 | `agent/stage2-database` |
-| 职责边界 | 仅交付第二阶段数据库初始化脚本、ER 文档与进度更新；未修改 `PROJECT_GOALS.md`、`docs/architecture.md`、`docs/api.md`、`.gitignore`，未编写 Go 业务代码，未执行 `push` / `merge` |
+| 主仓库路径 | `/Users/niezidong/Projects/go`（`main` 基线 `78e7abe`） |
+| 当前 Worktree | `/Users/niezidong/.herdr/worktrees/go/agent-stage3-backend` |
+| 当前分支 | `agent/stage3-backend` |
+| 职责边界 | 仅交付第三阶段后端基础工程与测试/进度更新；未修改已冻结契约文件（`PROJECT_GOALS.md`、`docs/*`、`deploy/mysql/init.sql`），未实现登录/业务 API/WS Hub/MQ 消费者，未执行 `push` / `merge` |
 
 ---
 
-## 三、本阶段 Commit 清单（含第一阶段基线节点）
+## 三、本阶段 Commit 清单（含前置主干基线）
 
-1. `357340b` (`main`) — `Merge branch 'agent/stage1-architecture'`（第一阶段全部文档与审阅整改已合入 `main`）
-2. `fc397bf` — `feat(db): add MySQL 8.0 init schema with 12 tables and bcrypt admin seed`（`deploy/mysql/init.sql`）
-3. `89d219a` — `docs(db): add 12-table ER diagram and schema design guide`（`docs/er-diagram.md`）
-4. 收口提交（紧随 `89d219a`）— `docs(db): update stage two progress and verification report`（`PROGRESS.md`）
+1. `78e7abe` (`main`) — `Merge branch 'agent/stage2-database'`（第一、二阶段交付已合入 `main`）
+2. `62037f6` — `feat(backend): initialize Go module, config loader, and slog logger`
+3. `f081880` — `feat(backend): add full frozen errcode table, response envelope, and middlewares`
+4. `13335f5` — `feat(backend): add snowflake generator, 12-table GORM models, and MySQL/Redis repositories`
+5. `26cb192` — `feat(backend): add /healthz probe, router, cmd/server lifecycle, and integration tests`
+6. 收口提交（紧随 `26cb192`）— `docs(backend): update stage three progress and verification report`（`PROGRESS.md`）
 
 ---
 
 ## 四、真实环境验收实测结果
 
-> 注：所有数据库校验均在已有 `mysql8`（`mysql:8.0` / `8.0.44`）Docker 容器的隔离临时库 `enterprise_im_stage2_verify` 中完成，未影响容器内其他已有数据库；验收完毕后已删除临时验证库。文档与提交均未包含任何数据库连接口令或环境密钥。
+> 注：所有实测均在本地已运行的 `mysql8`（`mysql:8.0.44`，3306）与 `my-redis`（`redis:7.4.7`，6379）容器上通过环境变量传入连接凭证完成；通过 `deploy/mysql/init.sql` 初始化 `enterprise_im` 12 张表后，集成测试对写表验证全程包裹在 `tx.Rollback()` 回滚事务中，未污染已有库表数据。所有文档、配置与提交均不包含任何数据库或 Redis 口令。
 
-### 1. MySQL 8.0 导入与幂等实测
+### 1. 编译与自动化测试（`go vet` / `go test -race` / `go build`）
 
-- **导入方式**：将 `deploy/mysql/init.sql` 目标库名临时映射为隔离库 `enterprise_im_stage2_verify`，通过 `docker exec -i mysql8` 导入，并连续执行两次验证幂等性。
-- **执行结果**：两次导入均退出码 `0`、无 SQL 错误；首次导入仅出现 3 条 MySQL 8.0.44 关于 `conversation_members` 中 `TINYINT(1)` 显示宽度的标准弃用提示 `Warning (Code 1681)`（严格保留自 `PROJECT_GOALS.md` §六.3 原文规范），其余 DDL 与种子插入无错误、无重复记录。
-- **库级字符集核对**（`information_schema.SCHEMATA`）：
-  - `SCHEMA_NAME = enterprise_im_stage2_verify`
-  - `DEFAULT_CHARACTER_SET_NAME = utf8mb4`
-  - `DEFAULT_COLLATION_NAME = utf8mb4_0900_ai_ci`
-- **`SHOW TABLES` 与 `information_schema.TABLES` 核对（共 12 张表，全部为 `InnoDB` + `utf8mb4_0900_ai_ci`）**：
-  - `assets`
-  - `audit_logs`
-  - `conversation_members`
-  - `conversations`
-  - `friend_requests`
-  - `friendships`
-  - `group_members`
-  - `groups`
-  - `message_receipts`
-  - `messages`
-  - `user_sessions`
-  - `users`
-- **关键结构核对（`SHOW CREATE TABLE`）**：
-  - `messages.id` 为 `bigint unsigned NOT NULL`（无 `AUTO_INCREMENT`），保留 `uk_msg_conv_seq`、 `uk_msg_sender_client`、`idx_msg_conv_created`、`idx_msg_sender_created`；
-  - `assets` 具备 `uk_assets_asset_id`、`storage_key` / `thumbnail_key`、`ref_type` / `ref_id` / `ref_conversation_id` / `ref_count` 支撑引用鉴权与引用拦截删除；
-  - `audit_logs` 无 `updated_at`，具备 `uk_audit_event_id` 与 `idx_audit_group_created` 等 5 组查询索引，在表结构与注释明确 `append-only` 语义；
-  - 中文表/列注释及种子昵称（`HEX(nickname) = E7B3BBE7BB9FE7AEA1E79086E59198`，即 `系统管理员`）以 UTF-8 正确落库，无乱码。
-- **默认管理员种子实测**：
-  - 查询 `users WHERE username='admin'`：共 `1` 条记录（二次导入仍为 `1` 条），`id=1`、`role='admin'`、`status=1`、`CHAR_LENGTH(password_hash)=60`、前缀 `$2a$10$`；
-  - 对数据库实际查出的 `password_hash` 使用本地 Python `bcrypt.checkpw(b"Admin@123456", ...)` 实测校验返回 `True`；
-  - 默认开发管理员账号仅限本地开发联调：`username = admin` / `password = Admin@123456`（非生产密钥）。
+- **静态检查与编译**：`cd backend && go vet ./...` 与 `go build -o /tmp/enterprise-im-server ./cmd/server` 均退出码 `0`（测试后已清理 `/tmp` 临时产物）。
+- **全量竞态测试（带真实 MySQL/Redis 环境变量）**：`cd backend && go test -count=1 -race -v ./...` 全部 10 个包通过、**0 跳过、0 失败**：
+  - `cmd/server`：`TestOrderedGracefulShutdownDrainsInFlightAndRunsStepsInOrder` 通过（验证在途请求排空、新请求拦截及 5 步关闭顺序日志）；
+  - `internal/config`：YAML 加载、ENV 覆盖、非法参数校验、脱敏摘要通过；
+  - `internal/middleware`：`X-Request-ID` 同步、`Authorization`/Query 脱敏、Panic 恢复（`19004`）、请求体超限（`10002`）、CORS 校验通过；
+  - `internal/model`：12 张表映射、`Message` 非自增校验、`Asset` 内部键不序列化、`AuditLog` 无更新删除字段通过；
+  - `internal/pkg/errcode`：全量 69 个冻结错误码与 WS close code 核验通过；
+  - `internal/pkg/logger`：敏感属性与认证头脱敏通过；
+  - `internal/pkg/snowflake`：32 协程并发唯一性与时钟回拨拒绝通过；
+  - `internal/repository`：`TestStartupConnectivityFailuresFailFast` 与 `TestLiveMySQLAndRedisModelsIntegration`（真实连接 MySQL/Redis、校验 `enterprise_im` 12 表与默认 `admin` 种子、事务内验证 Snowflake `Message` 与 `AuditLog` 插入并回滚）通过；
+  - `internal/service`：`TestHealthServiceCheckStates` 覆盖健康、单 MySQL 故障（`19001`）、单 Redis 故障（`19002`）及双故障优先（`19001`）分支；
+  - `tests`：`TestHealthzLiveMySQLAndRedis` 与 `TestHealthzFailurePathsWithoutMockingRedisClient` 通过。
 
-### 2. Mermaid 渲染与仓库格式检查
+### 2. 真实进程启动、`GET /healthz` 实探与失败路径验证
 
-- **Mermaid 渲染实测**：使用本地安装的 `mermaid-cli`（`mmdc 12.2.0`）直接渲染 [docs/er-diagram.md](docs/er-diagram.md)，识别 `1` 幅图表并成功生成约 `470K` SVG（`erDiagram`），退出码 `0`。
-- **仓库格式校验**：各次提交前执行 `git diff --cached --check` 均通过，无行尾空白或末尾多余空行。
+- **失败快速退出实测**：将 `REDIS_ADDR` 临时指向不可达端口 `127.0.0.1:16379` 启动编译后的服务二进制，进程立即失败并以非 `0` 退出（日志输出 `init redis: verify redis startup connectivity: ... connection refused`）。
+- **`GET /healthz` 正常实探（监听 `:18080`）**：
+  - HTTP 状态：`200 OK`
+  - 响应头：`X-Request-Id: r-917fb2b96aa1ccde`、`Content-Type: application/json; charset=utf-8`
+  - 响应体：`{"code":0,"message":"ok","data":{"status":"ok","mysql":"ok","redis":"ok","timestamp":"2026-11-26T06:00:55.964Z"},"request_id":"r-917fb2b96aa1ccde"}`
+- **未注册路由实测（`GET /api/v1/not-registered`）**：返回 HTTP `404 Not Found`、同一 `X-Request-Id` 与统一 JSON 错误信封（`code=10001`, `data=null`），确认本阶段未注册任何业务路由。
+- **故障注入分支实测**：集成测试使用真实 `go-redis` 客户端连接不可达本地端口及已关闭连接池实测 `GET /healthz`，均真实返回 HTTP `503 Service Unavailable`、业务码 `19002`、`data.mysql="ok"`、`data.redis="unavailable"` 与一致的 `X-Request-ID`。
+
+### 3. `SIGTERM` 优雅关闭实测
+
+- 向运行中的真实服务进程发送 `SIGTERM`，进程在超时窗口内以退出码 **`0`** 平滑退出。
+- 结构化 `slog` 日志按序输出：
+  1. `configuration_loaded`（`mysql_password: "[REDACTED]"`, `redis_password: "[REDACTED]"`）
+  2. `shutdown_signal_received`
+  3. `shutdown_step_1_stop_accepting_http`
+  4. `shutdown_ws_hook_noop` → `shutdown_step_2_websocket_closed`
+  5. `shutdown_mq_hook_noop` → `shutdown_step_3_mq_drained`
+  6. `shutdown_step_4_http_drained`
+  7. `shutdown_step_5_db_and_redis_closed`
 
 ---
 
-## 五、遗留问题与第三阶段衔接事项
+## 五、第四阶段衔接注意事项
 
-1. **审阅与合入主分支**：本阶段交付位于 `agent/stage2-database` 分支，等待审阅通过后由主仓库协调合入 `main`。
-2. **Docker Compose 挂载与生产口令替换**：后续部署编排阶段需将 `deploy/mysql/init.sql` 挂载至 MySQL 8.0 容器 `/docker-entrypoint-initdb.d/`；进入非本地环境前务必修改默认管理员 `admin` 的口令。
-3. **第三阶段后端模型映射要点**：
-   - 在 `backend/internal/model/` 为核心十表与 `assets`、`audit_logs` 建立 GORM 模型；
-   - `messages.id` 由服务端 Snowflake 生成并显式写入，禁止依赖数据库自增；
-   - 严格落实 `assets` 内部 `storage_key` / `thumbnail_key` 不对外暴露、未引用资产仅所有者可读、已被消息引用返回 `16006` 拒绝删除；
-   - 严格落实 `audit_logs` 的 `im-event-audit` 幂等消费写入（`uk_audit_event_id`）及 `append-only` 禁止更新/删除约束。
+1. **审阅与合入**：第三阶段代码位于 `agent/stage3-backend`，等待审阅通过后由主仓库协调合入 `main`。
+2. **第四阶段接入点**：
+   - 在 `backend/internal/pkg/jwt/`、`backend/internal/middleware/jwt.go`、`backend/internal/repository/*_repo.go`、`backend/internal/service/{auth,user,friend}_service.go` 与 `backend/internal/controller/{auth,user,friend}_controller.go` 扩展用户认证与好友管理业务；
+   - 在 `backend/internal/api/router.go` 注册 `/api/v1/auth/*`、`/api/v1/me*`、`/api/v1/users/search`、`/api/v1/friend-requests*`、`/api/v1/friends*` 路由；
+   - 在第五、六、七阶段将真实 WS Hub 与 Redis Streams Consumer 的关闭排空实现接入 `cmd/server/main.go` 的 `ShutdownHooks`。
