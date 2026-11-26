@@ -27,8 +27,10 @@ export interface Transport {
 
 export interface WSClientOptions {
   getAccessToken: () => string
+  getAccountId?: () => string | null | undefined
   origin?: string
   heartbeatMs?: number
+  maxAuthFailures?: number
   getLastSeq?: () => Record<string, string>
   createSocket?: (url: string) => Transport
   random?: () => number
@@ -41,12 +43,57 @@ type Events = Record<FrameEvent, Envelope> & {
   error: { kind: 'frame'; frame: Envelope } | { kind: 'protocol' | 'transport'; cause: unknown }
 }
 
+interface PendingEntry {
+  text: string
+  clientId: string
+  conversation: string
+}
+
+const DEFAULT_HEARTBEAT_MS = 25000
+const DEFAULT_MAX_AUTH_FAILURES = 5
+const WS_ERR_AUTH_FAILED = 18001
+const WS_ERR_SESSION_REVOKED = 18006
+const WS_CLOSE_POLICY_VIOLATION = 1008
+
 function object(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 function nonempty(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0
+}
+
+function decodeBase64Url(segment: string): string | null {
+  try {
+    const normalized = segment.replace(/-/g, '+').replace(/_/g, '/')
+    const padded = normalized + '='.repeat((4 - (normalized.length % 4)) % 4)
+    if (typeof atob === 'function') {
+      const binary = atob(padded)
+      const bytes = Uint8Array.from(binary, ch => ch.charCodeAt(0))
+      return new TextDecoder().decode(bytes)
+    }
+    return Buffer.from(padded, 'base64').toString('utf8')
+  } catch {
+    return null
+  }
+}
+
+function tokenSubject(token: string): string | null {
+  const parts = token.split('.')
+  if (parts.length !== 3 || !parts[1]) return null
+  const decoded = decodeBase64Url(parts[1])
+  if (!decoded) return null
+  try {
+    const payload = JSON.parse(decoded) as unknown
+    if (!object(payload)) return null
+    if (nonempty(payload.sub)) return payload.sub
+    if (typeof payload.sub === 'number' && Number.isSafeInteger(payload.sub) && payload.sub > 0) {
+      return String(payload.sub)
+    }
+    return null
+  } catch {
+    return null
+  }
 }
 
 function decode(raw: unknown): Envelope {
@@ -72,8 +119,17 @@ export class WSClient {
     'presence.update': new Set(), 'system.notice': new Set(), 'msg.ack': new Set(),
     'msg.push': new Set(), 'msg.recall': new Set(),
   }
-  private readonly pending = new Map<string, { text: string; clientId: string; conversation: string }>()
+  private readonly pendingByAccount = new Map<string, Map<string, PendingEntry>>()
   private socket?: Transport
+  private socketToken?: string
+  private socketAccountKey?: string
+  private authenticated = false
+  private authProbeNonce?: string
+  private authTimer?: ReturnType<typeof setTimeout>
+  private authRejected = false
+  private authFatal = false
+  private rejectedToken?: string
+  private authFailures = 0
   private retry?: ReturnType<typeof setTimeout>
   private heartbeat?: ReturnType<typeof setInterval>
   private awaitingPong?: string
@@ -84,7 +140,11 @@ export class WSClient {
     this.options = options
   }
 
-  get pendingCount() { return this.pending.size }
+  get pendingCount() {
+    const accountKey = this.resolveCurrentAccountKey()
+    if (!accountKey) return 0
+    return this.pendingByAccount.get(accountKey)?.size ?? 0
+  }
 
   on<Key extends keyof Events>(type: Key, listener: (event: Events[Key]) => void) {
     const listeners = this.listeners[type]
@@ -96,8 +156,33 @@ export class WSClient {
     this.listeners[type].forEach(listener => listener(event))
   }
 
+  private resolveAccountKey(token: string): string | null {
+    if (this.options.getAccountId) {
+      const accountId = this.options.getAccountId()
+      return nonempty(accountId) ? `account:${accountId.trim()}` : null
+    }
+    if (!nonempty(token)) return null
+    const sub = tokenSubject(token)
+    return sub !== null ? `sub:${sub}` : 'default'
+  }
+
+  private resolveCurrentAccountKey(): string | null {
+    try {
+      return this.resolveAccountKey(this.options.getAccessToken())
+    } catch {
+      return null
+    }
+  }
+
   connect() {
-    if (this.active) return
+    if (this.active) {
+      const nextAccount = this.resolveCurrentAccountKey()
+      if (this.socketAccountKey && nextAccount && this.socketAccountKey !== nextAccount) {
+        this.disconnect()
+      } else {
+        return
+      }
+    }
     this.active = true
     this.attempt()
   }
@@ -105,7 +190,10 @@ export class WSClient {
   disconnect() {
     this.active = false
     clearTimeout(this.retry)
+    this.retry = undefined
     this.retryCap = 1000
+    this.authFailures = 0
+    this.rejectedToken = undefined
     const socket = this.socket
     this.release()
     if (socket) {
@@ -116,21 +204,45 @@ export class WSClient {
 
   enqueue(data: MessageInput, reqId: string = requestId()): string {
     if (!nonempty(reqId) || !nonempty(data.client_msg_id) || !nonempty(data.conversation_id)) throw new Error('Missing message identity')
-    if (this.pending.has(reqId)) throw new Error('Duplicate pending req_id')
+    const accountKey = this.resolveCurrentAccountKey()
+    if (!accountKey) throw new Error('Missing active account')
+    let accountPending = this.pendingByAccount.get(accountKey)
+    if (!accountPending) {
+      accountPending = new Map()
+      this.pendingByAccount.set(accountKey, accountPending)
+    }
+    if (accountPending.has(reqId)) throw new Error('Duplicate pending req_id')
     const text = encode('msg.send', reqId, data)
-    this.pending.set(reqId, { text, clientId: data.client_msg_id, conversation: data.conversation_id })
-    if (this.socket?.readyState === 1) this.write(this.socket, text)
+    accountPending.set(reqId, { text, clientId: data.client_msg_id, conversation: data.conversation_id })
+    if (this.authenticated && this.socket?.readyState === 1 && this.socketAccountKey === accountKey) {
+      this.write(this.socket, text)
+    }
     return reqId
   }
 
   private attempt() {
+    clearTimeout(this.retry)
+    this.retry = undefined
     let socket: Transport
+    let token: string
+    let accountKey: string | null
     try {
       const url = new URL('/ws', this.options.origin ?? location.origin)
       if (url.protocol === 'http:') url.protocol = 'ws:'
       if (url.protocol === 'https:') url.protocol = 'wss:'
-      const token = this.options.getAccessToken()
+      token = this.options.getAccessToken()
       if (!nonempty(token)) throw new Error('Missing access token')
+      accountKey = this.resolveAccountKey(token)
+      if (!accountKey) throw new Error('Missing active account')
+      if (this.rejectedToken !== undefined && token === this.rejectedToken) {
+        this.authFailures += 1
+        if (this.authFailures >= (this.options.maxAuthFailures ?? DEFAULT_MAX_AUTH_FAILURES)) {
+          this.active = false
+          return
+        }
+        this.scheduleRetry()
+        return
+      }
       url.searchParams.set('access_token', token)
       socket = this.options.createSocket?.(url.href) ?? new WebSocket(url)
     } catch (cause) {
@@ -139,32 +251,92 @@ export class WSClient {
       return
     }
     this.socket = socket
+    this.socketToken = token
+    this.socketAccountKey = accountKey
+    this.authenticated = false
+    this.authRejected = false
+    this.authFatal = false
     socket.onopen = () => {
       if (socket !== this.socket) return
-      this.retryCap = 1000
-      this.heartbeat = setInterval(() => this.ping(socket), this.options.heartbeatMs ?? 25000)
-      for (const { text } of this.pending.values()) {
-        if (!this.write(socket, text)) return
-      }
-      this.emit('open', undefined)
+      // Do not treat HTTP 101 open as authenticated; verify session via ping/pong first.
+      this.startAuthProbe(socket)
     }
     socket.onclose = event => {
       if (socket !== this.socket) return
+      const wasAuthenticated = this.authenticated
+      const hadErrorFrame = this.authRejected
+      const authRejected = this.authRejected || (!wasAuthenticated && event.code === WS_CLOSE_POLICY_VIOLATION)
+      const authFatal = this.authFatal
+      const rejectedToken = this.rejectedToken ?? (authRejected ? this.socketToken : undefined)
       this.release()
-      this.scheduleRetry()
+      if (!wasAuthenticated && event.code === WS_CLOSE_POLICY_VIOLATION && !hadErrorFrame) {
+        this.emit('error', { kind: 'protocol', cause: new Error(event.reason || 'WebSocket handshake rejected') })
+      }
+      if (authRejected && rejectedToken !== undefined) {
+        this.rejectedToken = rejectedToken
+      }
+      if (authFatal) {
+        this.active = false
+      } else if (authRejected) {
+        this.authFailures += 1
+        if (this.authFailures >= (this.options.maxAuthFailures ?? DEFAULT_MAX_AUTH_FAILURES)) {
+          this.active = false
+        } else {
+          this.scheduleRetry()
+        }
+      } else {
+        this.scheduleRetry()
+      }
       this.emit('close', { code: event.code, reason: event.reason })
     }
     socket.onerror = cause => {
       if (socket === this.socket) this.emit('error', { kind: 'transport', cause })
     }
     socket.onmessage = event => {
-      if (socket === this.socket) this.receive(event.data)
+      if (socket === this.socket) this.receive(socket, event.data)
     }
   }
 
+  private startAuthProbe(socket: Transport) {
+    const nonce = requestId()
+    this.awaitingPong = nonce
+    this.authProbeNonce = nonce
+    const timeoutMs = this.options.heartbeatMs ?? DEFAULT_HEARTBEAT_MS
+    this.authTimer = setTimeout(() => {
+      if (socket === this.socket && !this.authenticated) socket.close()
+    }, timeoutMs)
+    this.write(socket, encode('ping', nonce, { nonce, last_seq: this.options.getLastSeq?.() ?? {} }))
+  }
+
+  private completeAuth(socket: Transport): boolean {
+    if (socket !== this.socket) return false
+    this.authenticated = true
+    this.retryCap = 1000
+    this.authFailures = 0
+    this.rejectedToken = undefined
+    this.heartbeat = setInterval(() => this.ping(socket), this.options.heartbeatMs ?? DEFAULT_HEARTBEAT_MS)
+    const accountPending = this.socketAccountKey ? this.pendingByAccount.get(this.socketAccountKey) : undefined
+    if (accountPending) {
+      for (const { text } of accountPending.values()) {
+        if (!this.write(socket, text)) return false
+      }
+    }
+    this.emit('open', undefined)
+    return socket === this.socket
+  }
+
   private release() {
+    clearTimeout(this.authTimer)
+    this.authTimer = undefined
     clearInterval(this.heartbeat)
+    this.heartbeat = undefined
     this.awaitingPong = undefined
+    this.authProbeNonce = undefined
+    this.authenticated = false
+    this.authRejected = false
+    this.authFatal = false
+    this.socketToken = undefined
+    this.socketAccountKey = undefined
     this.socket = undefined
   }
 
@@ -187,7 +359,7 @@ export class WSClient {
   }
 
   private ping(socket: Transport) {
-    if (socket !== this.socket || socket.readyState !== 1) return
+    if (socket !== this.socket || socket.readyState !== 1 || !this.authenticated) return
     if (this.awaitingPong) {
       socket.close()
       return
@@ -197,7 +369,7 @@ export class WSClient {
     this.write(socket, encode('ping', nonce, { nonce, last_seq: this.options.getLastSeq?.() ?? {} }))
   }
 
-  private receive(raw: unknown) {
+  private receive(socket: Transport, raw: unknown) {
     let frame: Envelope
     try {
       frame = decode(raw)
@@ -206,21 +378,40 @@ export class WSClient {
       return
     }
     switch (frame.type) {
-      case 'error':
+      case 'error': {
+        const code = frame.data.code
+        if (code === WS_ERR_SESSION_REVOKED) {
+          this.authRejected = true
+          this.authFatal = true
+          this.rejectedToken = this.socketToken
+        } else if (!this.authenticated && code === WS_ERR_AUTH_FAILED) {
+          this.authRejected = true
+          this.rejectedToken = this.socketToken
+        }
         this.emit('error', { kind: 'frame', frame })
         break
-      case 'pong':
+      }
+      case 'pong': {
         if (frame.req_id !== this.awaitingPong || frame.data.nonce !== this.awaitingPong) return
         this.awaitingPong = undefined
+        if (!this.authenticated && frame.req_id === this.authProbeNonce) {
+          this.authProbeNonce = undefined
+          clearTimeout(this.authTimer)
+          this.authTimer = undefined
+          if (!this.completeAuth(socket)) return
+        }
         this.emit('pong', frame)
         break
+      }
       case 'msg.ack': {
-        const entry = this.pending.get(frame.req_id)
+        if (!this.authenticated || !this.socketAccountKey) return
+        const accountPending = this.pendingByAccount.get(this.socketAccountKey)
+        const entry = accountPending?.get(frame.req_id)
         const data = frame.data
         if (entry && entry.clientId === data.client_msg_id && entry.conversation === data.conversation_id &&
             nonempty(data.msg_id) && nonempty(data.seq) && (data.status === 'normal' || data.status === 'recalled') &&
             ['sent', 'delivered', 'read'].some(status => status === data.delivery_status)) {
-          this.pending.delete(frame.req_id)
+          accountPending!.delete(frame.req_id)
           this.emit('msg.ack', frame)
         }
         break
