@@ -9,27 +9,27 @@ flowchart TD
     UI["Vue 3 / TypeScript · Axios 与 WSClient"] -->|HTTPS / WSS| NG["frontend · Nginx"]
     NG -->|REST /api/v1| API["Go 1.22+ / Gin · Middleware 与 Controller"]
     NG -->|Upgrade /ws| HUB["分片 WebSocket Hub · readPump 与 writePump"]
-    NG -->|GET /uploads| FILE["文件授权与本地存储"]
+    NG -->|GET /uploads| FILE["受权文件访问与本地存储"]
     API --> SVC["Service · 认证、好友、会话、消息、群与管理"]
     HUB -->|入站命令| SVC
     SVC --> REPO["Repository · GORM 事务与 Redis 客户端"]
     REPO --> DB[("MySQL 8.0")]
     REPO --> R[("Redis 7 · 状态与 Streams")]
-    R -->|XREADGROUP| W["持久化、投递与事件消费者"]
-    W -->|执行业务事务或读取已提交历史| SVC
+    R -->|XREADGROUP| W["提交补偿、投递与事件消费者"]
+    W -->|读取已提交记录并执行补偿| SVC
     W -->|按用户路由到连接| HUB
-    FILE -->|权限与消息引用| SVC
+    FILE -->|鉴权与资产引用校验| SVC
     FILE --> VOL[("上传卷")]
 ```
 
 | 边界 | 实现职责 |
 | --- | --- |
-| API / Router → Middleware → Controller | Gin 注册 HTTP、升级和健康检查路由。中间件处理 request_id、日志、恢复、CORS、JWT 与后台角色。Controller 绑定、校验、调用 Service、封装响应。 |
-| Service → Repository → Model | Service 判断会话成员、群角色、状态迁移并控制 GORM 事务。Repository 使用事务句柄、索引查询和 Redis 原语。Model 映射基线的十张 InnoDB 表。HTTP、WS 与消费者共用同一组业务规则。 |
-| WebSocket Hub | 使用 gorilla/websocket，按 user_id 分 64 片，各片的 sync.RWMutex 保护用户到多条连接的映射。连接身份绑定 user_id、session_id、device_id、node_id、conn_id。持锁取快照后释放，再向连接投递。 |
-| 单条连接 | readPump 唯一读取，writePump 唯一写入帧并设置写期限。每端有容量 256 的有界发送队列。队满即注销慢端并触发重连补偿。注销按 conn_id 只执行一次，通过取消信号结束泵，避免向已关闭通道发送。 |
-| Redis Streams 消费者 | 持久化组执行发送事务。各 Hub 的投递组将已提交的会话序列分发到本机连接，事件组分发回执、好友和群变更、撤回及下线。工作进程位于 backend 内。 |
-| 上传与下载 | 后端在持久卷校验实际文件、生成 UUID 与元数据，图片生成缩略图，语音解析时长。原件、衍生图和服务端元数据在同一卷内就绪后才返回上传引用。历史消息只保存引用和展示元数据。 |
+| API / Router → Middleware → Controller | Gin 注册 `/api/v1`、`/ws` 与免鉴权 `/healthz` 路由。中间件处理 request_id、日志、恢复、CORS、JWT 与后台角色。Controller 绑定、校验、调用 Service、封装响应。 |
+| Service → Repository → Model | Service 判断会话成员、群角色、状态迁移并控制 GORM 事务；消息发送与撤回主事务在请求/WS 链路内同步提交 MySQL。Repository 使用事务句柄、索引查询和 Redis 原语。Model 映射核心十张 InnoDB 表；上传资产元数据与不可变审计日志在第二阶段建表设计时于核心十表之外按需扩充 `assets` 与 `audit_logs` 支撑表。HTTP、WS 与消费者共用同一组业务规则。 |
+| WebSocket Hub | 使用 gorilla/websocket，按 user_id 分 64 片，各片的 sync.RWMutex 保护用户到多条连接的映射。连接身份绑定 user_id、session_id、device_id、node_id、conn_id，支持同一设备多标签页共享 session_id 并发建连。持锁取快照后释放，再向连接投递。 |
+| 单条连接 | readPump 唯一读取，writePump 唯一写入帧并设置写期限。每端有容量 256 的有界发送队列。队满即注销慢端并触发重连补偿。注销按 conn_id 只执行一次，通过取消信号结束泵，避免向已关闭通道发送，并禁止旧连接注销新连接租约。 |
+| Redis Streams 消费者 | `im-msg-persist` 消费组仅执行提交后补偿（如 Stream 生产补投、大群回执初始化/离线补偿索引与失败重试），不再重复执行主发送落库事务。各 Hub 的投递组将已提交的会话序列分发到本机连接，事件组分发回执、好友和群变更、撤回及下线。工作进程位于 backend 内。 |
+| 上传与下载 | 后端经 `/api/v1/uploads` 校验实际文件、生成 `asset_id` 与元数据，图片生成缩略图，语音解析时长，原件、衍生图与元数据就绪后返回引用。公开或受权头像/媒体经 `/api/v1/uploads/{asset_id}/download` 或 Nginx 内部受权反代 `/uploads` 输出，禁止绕过鉴权暴露本地磁盘路径。 |
 
 ### 客户端与重连
 
@@ -71,19 +71,19 @@ sequenceDiagram
     API->>DB: 事务写 messages、conversation、members、receipts
     DB-->>API: commit，得到 Snowflake msg_id 与 seq
     API->>S: XADD im:stream:messages，记录消息投递
-    API-->>C: msg.ack(msg_id, seq, status=sent)
+    API-->>C: msg.ack(msg_id, seq, status=normal, delivery_status=sent)
     S->>H: Consumer Group 投递，在线端写入有界队列
-    H-->>R: msg.push(status=sent)
+    H-->>R: msg.push(push_type=message, delivery_status=sent)
     R->>API: msg.delivered_ack(msg_id, seq)
     API->>DB: receipt=delivered，推进 last_delivered_seq
     API->>S: XADD im:stream:events(delivered)
     S->>H: 回执事件路由发送端
-    H-->>C: msg.push(receipt=delivered)
+    H-->>C: msg.push(push_type=receipt, delivery_status=delivered)
     R->>API: msg.read_ack(conversation_id, last_read_seq)
     API->>DB: 水位线更新，批量 receipt=read，清零 unread_count
     API->>S: XADD im:stream:events(read)
     S->>H: 已读事件路由发送端
-    H-->>C: msg.push(receipt=read)
+    H-->>C: msg.push(push_type=receipt, delivery_status=read)
 ```
 
 | 状态 | 进入条件 | 服务端持久化与回帧 | 重试与终点 |
@@ -97,16 +97,16 @@ sequenceDiagram
 
 每次写入先 `SET conv:lock:{conversation_id} <token> NX PX 5000`，锁内检查 `MAX(seq)`，缺失时以 MySQL 最大值初始化 `conv:seq:{conversation_id}`，再执行 `INCR`。锁覆盖分配、MySQL 事务与提交结果处理。事务失败时使用带 token 的 Lua 脚本恢复旧值或删除刚初始化的 key。进程在提交后崩溃造成的悬空增量由下一次持锁操作以 MySQL `MAX(seq)` 校准，不能跳过一个已提交消息，也不会把未提交序号暴露给客户端。`uk_msg_conv_seq` 是最终约束，冲突时回源读取已存在消息并按幂等规则返回。
 
-同一发送请求先查 `im:dedupe:{sender_id}:{client_msg_id}`。缓存值是 `msg_id|conversation_id|seq|status`，TTL 24 小时，写入使用 `SET NX`，并以 MySQL 唯一键作为永久事实。正在处理的短锁 `im:dedupe:lock:{sender_id}:{client_msg_id}` TTL 10 秒，异常过期后由下一次请求重新读取数据库。Snowflake 节点号必须在配置中唯一，时钟回拨由生成器暂停或拒绝，不复用已发出的 ID。
+同一发送请求先查 `im:dedupe:{sender_id}:{client_msg_id}`。缓存值是 `msg_id|conversation_id|seq|status|delivery_status`（`status` 取 `normal|recalled`，`delivery_status` 取 `sent|delivered|read`），TTL 24 小时，写入使用 `SET NX`，并以 MySQL 唯一键作为永久事实。正在处理的短锁 `im:dedupe:lock:{sender_id}:{client_msg_id}` TTL 10 秒，异常过期后由下一次请求重新读取数据库。Snowflake 节点号必须在配置中唯一，时钟回拨由生成器暂停或拒绝，不复用已发出的 ID。
 
 ## Redis Key、Streams 与消费者规范
 
 | Key 或命名 | 类型、TTL 与值 | 语义和写入边界 |
 | --- | --- | --- |
-| `im:presence:user:{user_id}` | String，TTL 75 秒，值为在线端数或最后心跳时间 | 任一端心跳续期。连接建立/关闭用计数脚本更新，只有计数为零且所有 session key 过期才广播离线。 |
-| `im:presence:session:{session_id}` | Hash，TTL 75 秒，含 `user_id/device_id/node_id/conn_id/last_seen_at` | 每一条 WS 连接一个租约。刷新和注销都验证 session_id、conn_id，避免旧连接删除新连接。 |
-| `im:route:user:{user_id}` | Set，TTL 90 秒，成员是 `node_id:conn_id` | 跨实例路由索引。节点注销只移除本连接，广播由目标节点过滤无效成员。 |
-| `im:route:session:{session_id}` | String，TTL 90 秒，值为 `node_id:conn_id` | 将 Refresh 会话映射到 WS 连接，禁用或单端退出时用于精准踢除。 |
+| `im:presence:user:{user_id}` | String，TTL 75 秒，值为非负整数（当前存活连接数） | 每次建连、心跳与断开注销时，按 `im:route:user:{user_id}` 中仍有有效 `im:presence:conn:{conn_id}` 租约的成员重算写入，避免异常掉线导致计数虚高；仅当存活连接数归零或所有 `conn` 租约过期才广播离线并更新 `last_online_at`。 |
+| `im:presence:conn:{conn_id}` | Hash，TTL 75 秒，含 `user_id/session_id/device_id/node_id/conn_id/last_seen_at` | 每一条 WS 连接（含同 `session_id` 下多个浏览器标签页）独占一个租约键。心跳续期与断开注销均按 `conn_id` 精确校验，绝不覆盖同会话其他标签页或新连接。 |
+| `im:route:user:{user_id}` | Set，TTL 90 秒，成员是 `node_id:conn_id` | 跨实例路由索引。建连 `SADD`、注销仅 `SREM` 本身 `node_id:conn_id`，广播时过滤已失效连接成员。 |
+| `im:route:session:{session_id}` | Set，TTL 90 秒，成员是 `node_id:conn_id` | 支持多标签页共享同一 `session_id` 时并存多条连接。单端退出、刷新失效、账号禁用或管理员踢下线时读取集合全量成员，路由各节点关闭该会话下的全部连接并清理对应 `conn` 租约；单连接断开只移除自身成员。 |
 | `conv:seq:{conversation_id}` | String，无固定 TTL，非负整数 | 会话序列缓存。只在持有 `conv:lock:{conversation_id}` 时校准和递增，MySQL `MAX(seq)` 是恢复来源。 |
 | `conv:lock:{conversation_id}` | String，PX 5000，随机 token | 串行化 seq 分配、消息事务和失败恢复。释放使用 token 校验 Lua。 |
 | `im:dedupe:{sender_id}:{client_msg_id}` | String，TTL 24h，消息定位与状态 | 快速幂等命中，不能替代 MySQL 唯一约束。 |
@@ -117,14 +117,14 @@ sequenceDiagram
 | `im:stream:dead:{messages\|events}` | Redis Stream，按月或人工审计保留 | 超过重试上限的完整事件引用、原 stream id、错误摘要、最后消费者。后台监控报警，人工修复后用原幂等键重放。 |
 | `im:stream:pending:reclaim:{messages\|events}:{group}` | Hash，按日过期 | 记录最近一次 XAUTOCLAIM 起点、认领数、失败数和时间。它是可观测性游标，真正的 Pending 仍由 Redis PEL 维护。 |
 
-固定 Consumer Group 如下。`im-msg-persist` 负责提交补偿，`im-msg-deliver` 负责消息投递，`im-event-deliver` 负责事件通知，`im-event-audit` 负责审计与监控。每个进程使用 `consumer={node_id}-{worker_id}`，不能共享同一 consumer 名称。
+固定 Consumer Group 如下。`im-msg-persist` 负责提交后补偿（不重复执行主发送事务，用于 Stream 补投、大群延迟回执初始化与离线补偿索引），`im-msg-deliver` 负责消息投递，`im-event-deliver` 负责事件通知，`im-event-audit` 负责审计日志落库与监控聚合。每个进程使用 `consumer={node_id}-{worker_id}`，不能共享同一 consumer 名称。
 
-消费者调用 `XREADGROUP GROUP <group> <consumer> COUNT 100 BLOCK 2000 STREAMS <stream> >`。完成业务事务、更新回执或把帧成功放入目标 Hub 的有界队列后才 `XACK <stream> <group> <id>`。消费逻辑以 stream id 与业务唯一键幂等，重复消息不得重复未读或重复广播。工作线程每 30 秒用 `XAUTOCLAIM <stream> <group> reclaim-{node_id} 30000 0 COUNT 100` 认领超时 Pending，五次失败或超过 15 分钟写入 `im:stream:dead:*` 并 XACK 原条目。消费者恢复时先处理 Pending，再读 `>`，停机只停止领取新条目，遗留 PEL 由下一节点认领。`XTRIM MINID` 或 `MAXLEN ~` 只在消息已被全部业务保留策略覆盖后运行。
+消费者调用 `XREADGROUP GROUP <group> <consumer> COUNT 100 BLOCK 2000 STREAMS <stream> >`。完成补偿写入、回执更新、审计落库或把帧成功放入目标 Hub 的有界队列后才 `XACK <stream> <group> <id>`。消费逻辑以 stream id 与业务唯一键幂等，重复消息不得重复未读或重复广播。工作线程每 30 秒用 `XAUTOCLAIM <stream> <group> reclaim-{node_id} 30000 0 COUNT 100` 认领超时 Pending，五次失败或超过 15 分钟写入 `im:stream:dead:*` 并 XACK 原条目。消费者恢复时先处理 Pending，再读 `>`，停机只停止领取新条目，遗留 PEL 由下一节点认领。`XTRIM MINID` 或 `MAXLEN ~` 只在消息已被全部业务保留策略覆盖后运行。
 
 ### 部署、生命周期与验收
 
-`docker compose up -d --build` 是一键冷启动入口。mysql 使用 MySQL 8.0、utf8mb4、数据卷、初始化脚本 deploy/mysql/init.sql 与健康检查；redis 使用 Redis 7、AOF、数据卷与健康检查。backend 由 Go 多阶段镜像构建，等待两项健康检查通过，挂载 uploads/。frontend 在 Node 构建阶段产生 Vue 静态资源，由 Nginx 托管并支持前端路由回退，向后端反代 /api、/uploads 和带 Upgrade、Connection 头的 /ws。Nginx 读超时长于心跳失效期。
+`docker compose up -d --build` 是一键冷启动入口。mysql 使用 MySQL 8.0、utf8mb4、数据卷、初始化脚本 deploy/mysql/init.sql 与健康检查；redis 使用 Redis 7、AOF、数据卷与健康检查。backend 由 Go 多阶段镜像构建，等待两项健康检查通过，挂载 uploads/。frontend 在 Node 构建阶段产生 Vue 静态资源，由 Nginx 托管并支持前端路由回退，向后端反代 `/api`、受权静态媒体前缀 `/uploads` 与带 Upgrade、Connection 头的 `/ws`。Nginx 读超时长于心跳失效期。
 
-backend 从 config.yaml 读取配置，环境变量覆盖，开发与生产区分数据库连接、密钥、允许的 Origin、上传卷和 Snowflake 节点号。HTTP 与 WS 日志用 log/slog 记录 request_id、user_id、latency_ms、结果码，脱敏认证头及握手凭证。健康检查实际探测 MySQL 和 Redis；后台监控汇总有效租约、连接总数、最近一分钟提交消息数、各消费组 lag 与 Pending、Go Runtime 内存和 goroutine 数。
+backend 从 config.yaml 读取配置，环境变量覆盖，开发与生产区分数据库连接、密钥、允许的 Origin、上传卷和 Snowflake 节点号。HTTP 与 WS 日志用 log/slog 记录 request_id、user_id、latency_ms、结果码，脱敏认证头及握手凭证。免鉴权健康检查端点 `GET /healthz` 实际探测 MySQL 和 Redis；后台监控汇总有效连接租约、连接总数、最近一分钟提交消息数、各消费组 lag 与 Pending、Go Runtime 内存和 goroutine 数。
 
 收到 SIGINT/SIGTERM 后停止接入新请求，向现有连接发停服通知并关闭，停止领取新任务，限时排空在途 HTTP 与消费者，最后关闭 MySQL 和 Redis。未确认的 Stream 条目留给下次认领。后续联调按注册、多端登录、互加好友、单群聊、媒体、撤回、重连、后台禁用的真实路径验收。压测使用 1000 个真实 WS 客户端，核对连续有序、零丢失、应用消息零重复和断开后两项在线计数归零；分片 Hub 另经 go test -race 检验。
