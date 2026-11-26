@@ -2,21 +2,22 @@
 import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import request from '@/api/request'
+import { getStoredTokens } from '@/composables/useAuthRefresh'
 import { useAuthStore } from '@/stores/auth'
 import { useContactStore } from '@/stores/contact'
 import {
   apiSuccess,
   authenticateFakeTransport,
-  bindStoreWS,
-  createTestWSClient,
-  findAction,
+  FakeTransport,
   installInMemoryRequestAdapter,
+  installInMemoryXhr,
   makeTestJwt,
   seedAuthUser,
 } from './helpers'
 
 describe('auth single-flight token refresh and contact presence updates', () => {
   let restoreHttp: (() => void) | undefined
+  let restoreWs: (() => void) | undefined
 
   beforeEach(() => {
     setActivePinia(createPinia())
@@ -24,28 +25,43 @@ describe('auth single-flight token refresh and contact presence updates', () => 
   })
 
   afterEach(() => {
+    useContactStore().reset()
+    useAuthStore().clearLocalSession()
     restoreHttp?.()
     restoreHttp = undefined
+    restoreWs?.()
+    restoreWs = undefined
+    localStorage.clear()
   })
 
   it('deduplicates concurrent 401/11001 responses into a single /auth/refresh call and replays queued requests', async () => {
-    const authStore = useAuthStore() as unknown as Record<string, unknown>
-    seedAuthUser(authStore, '10001')
-
     const initialToken = makeTestJwt('10001', 'jti-expired')
     const rotatedToken = makeTestJwt('10001', 'jti-fresh')
-    if ('accessToken' in authStore) authStore.accessToken = initialToken
-    if ('refreshToken' in authStore) authStore.refreshToken = 'rt-old-1'
-    if ('deviceId' in authStore) authStore.deviceId = 'dev-web-1'
-    localStorage.setItem('access_token', initialToken)
-    localStorage.setItem('refresh_token', 'rt-old-1')
-    localStorage.setItem('device_id', 'dev-web-1')
+    const initialTokens = {
+      access_token: initialToken,
+      refresh_token: 'rt-old-1',
+      token_type: 'Bearer',
+      expires_in: 900,
+      refresh_expires_in: 604800,
+      session_id: '501',
+      device_id: 'dev-web-1',
+    }
+    localStorage.setItem('im_auth_tokens', JSON.stringify(initialTokens))
+    localStorage.setItem('im_device_id', 'dev-web-1')
+
+    const authStore = useAuthStore()
+    seedAuthUser(authStore, '10001')
+    authStore.tokens = { ...initialTokens }
 
     let refreshCount = 0
     let activeToken = initialToken
 
-    const adapter = installInMemoryRequestAdapter(request, (method, url) => {
+    // Intercept at the XHR transport level so both business `request` and `useAuthRefresh`'s private `rawClient` are covered.
+    const xhr = installInMemoryXhr((method, url, body, headers) => {
       if (method === 'POST' && url.endsWith('/auth/refresh')) {
+        const reqBody = (body ?? {}) as { refresh_token?: string; device_id?: string }
+        expect(reqBody.refresh_token).toBe('rt-old-1')
+        expect(reqBody.device_id).toBe('dev-web-1')
         refreshCount += 1
         activeToken = rotatedToken
         return {
@@ -63,7 +79,7 @@ describe('auth single-flight token refresh and contact presence updates', () => 
         }
       }
       if (method === 'GET' && url.endsWith('/me')) {
-        if (activeToken !== rotatedToken) {
+        if (headers.authorization !== `Bearer ${rotatedToken}` || activeToken !== rotatedToken) {
           return {
             status: 401,
             body: { code: 11001, message: 'access token expired', data: null, request_id: 'err-11001' },
@@ -79,7 +95,7 @@ describe('auth single-flight token refresh and contact presence updates', () => 
       }
       return { status: 404, body: { code: 10000, message: 'unexpected route', data: null, request_id: 'err-404' } }
     })
-    restoreHttp = adapter.restore
+    restoreHttp = xhr.restore
 
     const responses = await Promise.all([
       request.get('/me'),
@@ -89,6 +105,11 @@ describe('auth single-flight token refresh and contact presence updates', () => 
 
     expect(refreshCount).toBe(1)
     expect(responses).toHaveLength(3)
+    expect(responses.every(r => r.data?.code === 0)).toBe(true)
+    expect(xhr.calls.filter(c => c.method === 'POST' && c.url.endsWith('/auth/refresh'))).toHaveLength(1)
+    expect(xhr.calls.filter(c => c.method === 'GET' && c.url.endsWith('/me'))).toHaveLength(6)
+    expect(getStoredTokens()?.access_token).toBe(rotatedToken)
+    expect(getStoredTokens()?.refresh_token).toBe('rt-new-2')
   })
 
   it('updates friend online status and last_online_at when presence.update arrives', async () => {
@@ -122,43 +143,74 @@ describe('auth single-flight token refresh and contact presence updates', () => 
     })
     restoreHttp = adapter.restore
 
+    const sockets: FakeTransport[] = []
+    const PreviousWebSocket = globalThis.WebSocket
+    globalThis.WebSocket = class extends FakeTransport {
+      constructor(_url: string | URL) {
+        super()
+        sockets.push(this)
+      }
+    } as unknown as typeof WebSocket
+    restoreWs = () => {
+      globalThis.WebSocket = PreviousWebSocket
+    }
+
+    const token = makeTestJwt('10001')
+    localStorage.setItem(
+      'im_auth_tokens',
+      JSON.stringify({
+        access_token: token,
+        refresh_token: 'rt-1',
+        token_type: 'Bearer',
+        expires_in: 900,
+        refresh_expires_in: 604800,
+        session_id: '501',
+        device_id: 'dev-web-1',
+      }),
+    )
+
+    const authStore = useAuthStore()
+    seedAuthUser(authStore, '10001')
+    authStore.tokens = getStoredTokens()
+
     const contactStore = useContactStore()
-    const { client, sockets } = createTestWSClient()
-    const bound = bindStoreWS(contactStore, client)
-    if (bound) {
-      client.connect()
-      sockets[0].open()
-      authenticateFakeTransport(sockets[0])
+    const maybeBindWSClient = (contactStore as unknown as { bindWSClient?: () => void }).bindWSClient
+    if (typeof maybeBindWSClient === 'function') {
+      maybeBindWSClient()
+    } else {
+      contactStore.bindRealtimeListeners()
     }
 
-    const fetchFriends = findAction(contactStore, ['fetchFriends', 'loadFriends', 'fetchContacts'])
-    expect(fetchFriends, 'useContactStore must expose fetchFriends/loadFriends').not.toBeNull()
-    await Promise.resolve((fetchFriends as () => unknown)())
+    authStore.connectWS()
+    expect(sockets.length).toBeGreaterThanOrEqual(1)
+    const activeSocket = sockets[sockets.length - 1]
+    activeSocket.open()
+    authenticateFakeTransport(activeSocket)
 
-    const presenceHandler = findAction(contactStore, ['handlePresenceUpdate', 'onPresenceUpdate', 'applyPresenceUpdate', 'updatePresence'])
-    const onlinePayload = { user_id: '10002', online: true, device_count: 1, last_online_at: null }
-    if (presenceHandler) {
-      ;(presenceHandler as (data: unknown) => unknown)(onlinePayload)
-    } else if (sockets[0]) {
-      sockets[0].receive({ type: 'presence.update', req_id: 'pres-1', timestamp: Date.now(), data: onlinePayload })
-    }
+    await contactStore.fetchFriends()
 
-    const storeRecord = contactStore as unknown as Record<string, unknown>
-    const friends = (storeRecord.friends ?? storeRecord.items ?? storeRecord.contacts ?? []) as Array<{
-      friend_id?: string
-      online?: boolean
-      user?: { id?: string; online?: boolean; last_online_at?: string | null }
-    }>
-    const bob = friends.find(f => f.friend_id === '10002' || f.user?.id === '10002')
-    expect(bob?.online ?? bob?.user?.online).toBe(true)
+    activeSocket.receive({
+      type: 'presence.update',
+      req_id: 'pres-1',
+      timestamp: Date.now(),
+      data: { user_id: '10002', online: true, device_count: 1, last_online_at: null },
+    })
 
-    const offlinePayload = { user_id: '10002', online: false, device_count: 0, last_online_at: '2026-11-26T12:00:00.000Z' }
-    if (presenceHandler) {
-      ;(presenceHandler as (data: unknown) => unknown)(offlinePayload)
-    } else if (sockets[0]) {
-      sockets[0].receive({ type: 'presence.update', req_id: 'pres-2', timestamp: Date.now(), data: offlinePayload })
-    }
-    expect(bob?.online ?? bob?.user?.online).toBe(false)
-    client.disconnect()
+    const bob = contactStore.findFriend('10002')
+    expect(bob?.online).toBe(true)
+    expect(bob?.user.online).toBe(true)
+    expect(bob?.user.last_online_at).toBeNull()
+
+    const offlineAt = '2026-11-26T12:00:00.000Z'
+    activeSocket.receive({
+      type: 'presence.update',
+      req_id: 'pres-2',
+      timestamp: Date.now(),
+      data: { user_id: '10002', online: false, device_count: 0, last_online_at: offlineAt },
+    })
+
+    expect(bob?.online).toBe(false)
+    expect(bob?.user.online).toBe(false)
+    expect(bob?.user.last_online_at).toBe(offlineAt)
   })
 })
