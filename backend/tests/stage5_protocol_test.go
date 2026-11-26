@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"strconv"
 	"strings"
 	"testing"
@@ -37,10 +38,26 @@ func stage5Failure(t *testing.T, conn *websocket.Conn, want *errcode.Error, kind
 	}
 }
 
-func stage5HandshakeDenied(t *testing.T, conn *websocket.Conn) {
+func stage5HandshakeDenied(t *testing.T, rig *stage5Rig, token string, bearer bool) {
 	t.Helper()
-	stage5Failure(t, conn, errcode.ErrWSAuthFailed, "handshake", "")
-	stage5ExpectClose(t, conn, websocket.ClosePolicyViolation)
+	response, body := rig.dialDenied(t, token, bearer)
+	if response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("/ws handshake returned HTTP %d, want %d; body=%s", response.StatusCode, http.StatusUnauthorized, string(body))
+	}
+	if contentType := response.Header.Get("Content-Type"); !strings.HasPrefix(contentType, "application/json") {
+		t.Fatalf("/ws handshake Content-Type=%q, want application/json", contentType)
+	}
+	reqID := response.Header.Get(errcode.HeaderRequestID)
+	if reqID == "" {
+		t.Fatalf("/ws handshake missing %s header", errcode.HeaderRequestID)
+	}
+	var env errcode.Envelope
+	if err := json.Unmarshal(body, &env); err != nil {
+		t.Fatalf("decode /ws handshake error envelope (%v): %s", err, string(body))
+	}
+	if env.Code != errcode.ErrWSAuthFailed.Code || env.Message == "" || env.Data != nil || env.RequestID != reqID {
+		t.Fatalf("unexpected /ws handshake error envelope: %+v (header request_id=%q, body=%s)", env, reqID, string(body))
+	}
 }
 
 func TestStage5WSHandshakeInvalidJWT(t *testing.T) {
@@ -56,7 +73,7 @@ func TestStage5WSHandshakeInvalidJWT(t *testing.T) {
 	for _, tc := range []struct{ name, token string }{
 		{"missing", ""}, {"malformed", "invalid"}, {"bad_signature", strings.Join(parts, ".")},
 	} {
-		t.Run(tc.name, func(t *testing.T) { stage5HandshakeDenied(t, rig.dial(t, tc.token, false, nil)) })
+		t.Run(tc.name, func(t *testing.T) { stage5HandshakeDenied(t, rig, tc.token, false) })
 	}
 }
 
@@ -76,7 +93,8 @@ func TestStage5WSHandshakeLiveState(t *testing.T) {
 			case "disabled_user":
 				stage5Check(t, rig.db.WithContext(ctx).Model(&model.User{}).Where("id = ?", session.UserID).Update("status", model.UserStatusDisabled).Error)
 			}
-			stage5HandshakeDenied(t, rig.dial(t, session.token, true, nil))
+			stage5HandshakeDenied(t, rig, session.token, true)
+			rig.count(t, session.UserID, 1)
 			reqID := uuid.NewString()
 			stage5Send(t, control, "ping", reqID, map[string]string{"nonce": reqID})
 			stage5Failure(t, control, errcode.ErrWSSessionRevoked, "ping", reqID)
