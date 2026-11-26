@@ -56,7 +56,8 @@ func (u UploadConfig) MaxPossibleBytes() int64 {
 
 // ChatConfig holds chat messaging and recall policy settings.
 type ChatConfig struct {
-	RecallWindow time.Duration `mapstructure:"recall_window"`
+	RecallWindow       time.Duration `mapstructure:"recall_window"`
+	DirectPushFallback bool          `mapstructure:"direct_push_fallback"`
 }
 
 type WSConfig struct {
@@ -321,8 +322,9 @@ func (c *Config) RedactedSummary() map[string]any {
 		"redis_db":           c.Redis.DB,
 		"redis_password":     "[REDACTED]",
 		"snowflake_node_id":  c.Snowflake.NodeID,
-		"allowed_origins":    c.CORS.AllowedOrigins,
-		"chat_recall_window": c.Chat.RecallWindow.String(),
+		"allowed_origins":          c.CORS.AllowedOrigins,
+		"chat_recall_window":       c.Chat.RecallWindow.String(),
+		"chat_direct_push_fallback": c.Chat.DirectPushFallback,
 	}
 }
 
@@ -383,11 +385,13 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("upload.thumbnail_max_dim", 320)
 	v.SetDefault("upload.download_url_ttl", "15m")
 	v.SetDefault("chat.recall_window", "2m")
+	v.SetDefault("chat.direct_push_fallback", false)
 }
 
 func bindEnvs(v *viper.Viper) {
 	bindings := map[string][]string{
-		"chat.recall_window":           {"IM_CHAT_RECALL_WINDOW", "CHAT_RECALL_WINDOW"},
+		"chat.recall_window":        {"IM_CHAT_RECALL_WINDOW", "CHAT_RECALL_WINDOW"},
+		"chat.direct_push_fallback": {"IM_CHAT_DIRECT_PUSH_FALLBACK", "CHAT_DIRECT_PUSH_FALLBACK"},
 		"ws.heartbeat_timeout":         {"IM_WS_HEARTBEAT_TIMEOUT", "WS_HEARTBEAT_TIMEOUT"},
 		"ws.write_timeout":             {"IM_WS_WRITE_TIMEOUT", "WS_WRITE_TIMEOUT"},
 		"ws.max_frame_bytes":           {"IM_WS_MAX_FRAME_BYTES", "WS_MAX_FRAME_BYTES"},

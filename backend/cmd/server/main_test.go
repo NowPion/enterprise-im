@@ -22,6 +22,8 @@ import (
 	pkgjwt "enterprise-im/backend/internal/pkg/jwt"
 	"enterprise-im/backend/internal/pkg/logger"
 	"enterprise-im/backend/internal/pkg/snowflake"
+	"enterprise-im/backend/internal/repository"
+	"enterprise-im/backend/internal/service"
 )
 
 // pipeListener implements net.Listener over in-memory net.Pipe connections so
@@ -416,5 +418,43 @@ func TestBuildRouterMountsHealthzAndAllStage4Routes(t *testing.T) {
 		if env.Code != errcode.ErrAccessTokenInvalid.Code {
 			t.Fatalf("%s %s expected 11001, got %d", tc[0], tc[1], env.Code)
 		}
+	}
+}
+
+func TestStage7DefaultChatWiringPublishesStreamWithoutDirectPush(t *testing.T) {
+	cfg, err := config.Load("../../configs/config.yaml")
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.Chat.DirectPushFallback {
+		t.Fatal("expected chat.direct_push_fallback to default to false in config")
+	}
+
+	rdb := redis.NewClient(&redis.Options{Addr: "127.0.0.1:1"})
+	defer func() { _ = rdb.Close() }()
+
+	adapter := newRedisStreamPublisherAdapter(repository.NewRedisStreamPublisher(rdb))
+	if adapter == nil {
+		t.Fatal("expected non-nil stream publisher adapter")
+	}
+	if err := adapter.PublishMessage(context.Background(), service.StreamMessage{
+		Kind:           "message",
+		MessageID:      1,
+		ConversationID: 1,
+		Seq:            1,
+		SenderID:       1,
+		PayloadRef:     "mysql:messages:1",
+	}); err == nil {
+		t.Fatal("expected PublishMessage against unreachable redis to return error")
+	}
+	if err := adapter.PublishEvent(context.Background(), service.StreamEvent{
+		Kind:           "recall",
+		Event:          "message.recalled",
+		ConversationID: 1,
+		ActorID:        1,
+		MessageID:      1,
+		Seq:            2,
+	}); err == nil {
+		t.Fatal("expected PublishEvent against unreachable redis to return error")
 	}
 }
