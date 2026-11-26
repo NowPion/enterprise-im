@@ -48,5 +48,15 @@ redis:
 snowflake:
   node_id: 1
 
+jwt:
+  secret: "replace-with-32byte-jwt-secret-in-env" # Placeholder only; set JWT_SECRET or IM_JWT_SECRET in runtime/production
+  issuer: enterprise-im
+  access_ttl: 15m
+  refresh_ttl: 168h
+
+auth:
+  max_sessions_per_user: 5
+  bcrypt_cost: 10
+
 health:
   probe_timeout: 2s

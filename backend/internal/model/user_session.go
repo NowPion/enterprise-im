@@ -20,7 +20,7 @@ type UserSession struct {
 	UserAgent        string     `gorm:"column:user_agent;type:varchar(512);not null;default:''" json:"user_agent"`
 	ExpiresAt        time.Time  `gorm:"column:expires_at;type:datetime(3);not null;index:idx_sessions_user_revoked_exp,priority:3" json:"expires_at"`
 	RevokedAt        *time.Time `gorm:"column:revoked_at;type:datetime(3);default:null;index:idx_sessions_user_revoked_exp,priority:2" json:"revoked_at"`
-	LastActiveAt     time.Time  `gorm:"column:last_active_at;type:datetime(3);not null" json:"last_active_at"`
+	LastActiveAt     time.Time  `gorm:"column:last_active_at;type:datetime(3);not null;default:CURRENT_TIMESTAMP(3)" json:"last_active_at"`
 	CreatedAt        time.Time  `gorm:"column:created_at;type:datetime(3);not null;autoCreateTime" json:"created_at"`
 	UpdatedAt        time.Time  `gorm:"column:updated_at;type:datetime(3);not null;autoUpdateTime" json:"updated_at"`
 }
