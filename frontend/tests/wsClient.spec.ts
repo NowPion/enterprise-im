@@ -11,6 +11,11 @@ class Socket implements Transport {
   sent: string[] = []
   open() { this.readyState = 1; this.onopen?.(new Event('open')) }
   close(code = 1006, reason = '') { this.readyState = 3; this.onclose?.({ code, reason } as CloseEvent) }
+  failPre101(reason = '') {
+    this.readyState = 3
+    this.onerror?.(new Event('error'))
+    this.onclose?.({ code: 1006, reason } as CloseEvent)
+  }
   send(text: string) { assert.equal(this.readyState, 1); this.sent.push(text) }
   receive(data: unknown) { this.onmessage?.(new MessageEvent('message', { data: JSON.stringify(data) })) }
 }
@@ -238,9 +243,87 @@ it('B1: isolates pending frames on account switch so B receives zero frames from
   assert.equal(explicitBFrames.length, 0)
 })
 
-it('B2: handshake rejection only reports failure, never replays pending before auth, and stops reusing invalidated credentials', () => {
-  let token = 'expired-token-1'
-  const { client, sockets } = setup({ getAccessToken: () => token, maxAuthFailures: 3 })
+it('B2: treats pre-101 HTTP 401 rejection (onerror + onclose 1006 without onopen) as auth failure and never infinitely retries the same token', () => {
+  let token = 'expired-pre101-token'
+  const { client, sockets, urls } = setup({ getAccessToken: () => token, maxAuthFailures: 3 })
+  const events: string[] = []
+  client.on('open', () => events.push('open'))
+  client.on('close', ev => events.push(`close:${ev.code}`))
+  client.on('error', err => events.push(`error:${err.kind}`))
+
+  client.enqueue(message({ client_msg_id: 'cmsg-pre101', content: 'wait-for-auth' }), 'req-pre101')
+  client.connect()
+
+  // Server rejects before HTTP 101 upgrade (e.g., HTTP 401 + 18001): browser only fires onerror + onclose(1006)
+  sockets[0].failPre101()
+  assert.deepEqual(events, ['error:transport', 'close:1006'])
+  assert.equal(sockets[0].sent.length, 0)
+  assert.equal(client.pendingCount, 1)
+
+  // Across multiple backoff ticks with the same invalidated token, client must NOT dial 7 times with the same token
+  for (const ms of [500, 1000, 2000, 4000, 8000, 16000, 30000]) {
+    mock.timers.tick(ms)
+  }
+  assert.equal(sockets.length, 1)
+  assert.deepEqual(urls.map(u => u.searchParams.get('access_token')), ['expired-pre101-token'])
+  assert.equal(events.filter(e => e === 'open').length, 0)
+
+  // Also verify recovery when a fresh valid token arrives during backoff after a pre-101 rejection
+  client.disconnect()
+  events.length = 0
+  token = 'expired-token-2'
+  client.connect()
+  assert.equal(sockets.length, 2)
+  sockets[1].failPre101()
+  assert.deepEqual(events, ['error:transport', 'close:1006'])
+
+  mock.timers.tick(500)
+  assert.equal(sockets.length, 2) // still blocked while token unchanged
+
+  token = 'fresh-valid-token'
+  mock.timers.tick(1000)
+  assert.equal(sockets.length, 3)
+  sockets[2].open()
+  assert.equal(events.filter(e => e === 'open').length, 0)
+  assert.equal(sockets[2].sent.map(raw => JSON.parse(raw)).filter(f => f.type === 'msg.send').length, 0)
+
+  authenticateSocket(sockets[2])
+  assert.equal(events.filter(e => e === 'open').length, 1)
+  assert.deepEqual(
+    sockets[2].sent.map(raw => JSON.parse(raw)).filter(f => f.type === 'msg.send').map(f => f.req_id),
+    ['req-pre101'],
+  )
+
+  // Consecutive pre-101 rejections with distinct invalid tokens back off exponentially and stop at maxAuthFailures=3
+  sockets[2].close()
+  let idx = 0
+  token = `bad-pre101-${++idx}`
+  mock.timers.tick(500)
+  assert.equal(sockets.length, 4)
+  sockets[3].failPre101()
+
+  token = `bad-pre101-${++idx}`
+  mock.timers.tick(999)
+  assert.equal(sockets.length, 4)
+  mock.timers.tick(1)
+  assert.equal(sockets.length, 5)
+  sockets[4].failPre101()
+
+  token = `bad-pre101-${++idx}`
+  mock.timers.tick(1999)
+  assert.equal(sockets.length, 5)
+  mock.timers.tick(1)
+  assert.equal(sockets.length, 6)
+  sockets[5].failPre101()
+
+  token = 'never-dialed-after-stop'
+  mock.timers.tick(30000)
+  assert.equal(sockets.length, 6)
+})
+
+it('B2: keeps 18001/1008 post-upgrade rejection and immediate account switch during backoff working', () => {
+  let token = makeJwt('1001', 'jti-a1')
+  const { client, sockets, urls } = setup({ getAccessToken: () => token, maxAuthFailures: 3 })
   const events: string[] = []
   const errorCodes: number[] = []
   client.on('open', () => events.push('open'))
@@ -250,73 +333,31 @@ it('B2: handshake rejection only reports failure, never replays pending before a
     if (err.kind === 'frame') errorCodes.push(err.frame.data.code as number)
   })
 
-  client.enqueue(message({ client_msg_id: 'cmsg-1', content: 'wait-for-auth' }), 'req-1')
+  client.enqueue(message({ client_msg_id: 'cmsg-a1', content: 'from-A' }), 'req-a1')
   client.connect()
 
-  // Server completes HTTP 101 upgrade, then immediately rejects with 18001 + 1008
+  // Post-101 18001 + 1008 defense-in-depth path still blocks replay, reports error, and blocks token reuse
   sockets[0].open()
   assert.deepEqual(events, [])
   assert.equal(sockets[0].sent.map(raw => JSON.parse(raw)).filter(f => f.type === 'msg.send').length, 0)
-
   sockets[0].receive(frame('error', { code: 18001, message: '11001 access token expired', retryable: false, related_type: 'handshake', related_req_id: '' }, 'ws-req-1'))
   sockets[0].close(1008, '18001')
 
   assert.deepEqual(events, ['error:frame', 'close:1008'])
   assert.deepEqual(errorCodes, [18001])
   assert.equal(sockets[0].sent.map(raw => JSON.parse(raw)).filter(f => f.type === 'msg.send').length, 0)
-  assert.equal(client.pendingCount, 1)
 
-  // Same invalidated credential must NOT be re-dialed across backoff ticks
   mock.timers.tick(500)
   assert.equal(sockets.length, 1)
 
-  // If a refreshed valid token becomes available before next backoff tick, client connects and replays pending after pong
-  token = 'fresh-valid-token'
-  mock.timers.tick(1000)
+  // Switching to account B while A is waiting in backoff dials B immediately without leaking A's frames
+  token = makeJwt('2002', 'jti-b1')
+  client.connect()
   assert.equal(sockets.length, 2)
+  assert.equal(urls[1].searchParams.get('access_token'), token)
   sockets[1].open()
-  assert.equal(events.filter(e => e === 'open').length, 0)
-  assert.equal(sockets[1].sent.map(raw => JSON.parse(raw)).filter(f => f.type === 'msg.send').length, 0)
-
   authenticateSocket(sockets[1])
-  assert.equal(events.filter(e => e === 'open').length, 1)
-  const replayed = sockets[1].sent.map(raw => JSON.parse(raw)).filter(f => f.type === 'msg.send')
-  assert.deepEqual(replayed.map(f => f.req_id), ['req-1'])
-
-  // Consecutive rejections with distinct bad tokens back off exponentially and stop at maxAuthFailures
-  sockets[1].close()
-  let attemptIdx = 0
-  token = `bad-tok-${++attemptIdx}`
-  mock.timers.tick(500)
-  assert.equal(sockets.length, 3)
-  sockets[2].open()
-  sockets[2].receive(frame('error', { code: 18001, message: 'invalid', retryable: false }))
-  sockets[2].close(1008, '18001')
-
-  token = `bad-tok-${++attemptIdx}`
-  mock.timers.tick(999)
-  assert.equal(sockets.length, 3)
-  mock.timers.tick(1)
-  assert.equal(sockets.length, 4)
-  sockets[3].open()
-  sockets[3].receive(frame('error', { code: 18001, message: 'invalid', retryable: false }))
-  sockets[3].close(1008, '18001')
-
-  // Backoff doubled to 4000*0.5=2000ms (not reset by onopen!)
-  token = `bad-tok-${++attemptIdx}`
-  mock.timers.tick(1999)
-  assert.equal(sockets.length, 4)
-  mock.timers.tick(1)
-  assert.equal(sockets.length, 5)
-  sockets[4].open()
-  sockets[4].receive(frame('error', { code: 18001, message: 'invalid', retryable: false }))
-  sockets[4].close(1008, '18001')
-
-  // Reached maxAuthFailures=3 -> stopped retrying
-  token = 'never-dialed-after-stop'
-  mock.timers.tick(30000)
-  assert.equal(sockets.length, 5)
-  assert.equal(events.filter(e => e === 'open').length, 1)
+  assert.equal(sockets[1].sent.map(raw => JSON.parse(raw)).filter(f => f.type === 'msg.send').length, 0)
 })
 
 it('B2: stops immediately on 18006 session revocation without replaying pending frames', () => {

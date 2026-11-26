@@ -123,12 +123,16 @@ export class WSClient {
   private socket?: Transport
   private socketToken?: string
   private socketAccountKey?: string
+  private activeAccountKey?: string
+  private socketOpened = false
+  private hadTransportError = false
   private authenticated = false
   private authProbeNonce?: string
   private authTimer?: ReturnType<typeof setTimeout>
   private authRejected = false
   private authFatal = false
   private rejectedToken?: string
+  private lastPreOpenFailedToken?: string
   private authFailures = 0
   private retry?: ReturnType<typeof setTimeout>
   private heartbeat?: ReturnType<typeof setInterval>
@@ -175,15 +179,16 @@ export class WSClient {
   }
 
   connect() {
+    const nextAccount = this.resolveCurrentAccountKey()
     if (this.active) {
-      const nextAccount = this.resolveCurrentAccountKey()
-      if (this.socketAccountKey && nextAccount && this.socketAccountKey !== nextAccount) {
+      if (this.activeAccountKey && nextAccount && this.activeAccountKey !== nextAccount) {
         this.disconnect()
       } else {
         return
       }
     }
     this.active = true
+    this.activeAccountKey = nextAccount ?? undefined
     this.attempt()
   }
 
@@ -194,6 +199,8 @@ export class WSClient {
     this.retryCap = 1000
     this.authFailures = 0
     this.rejectedToken = undefined
+    this.lastPreOpenFailedToken = undefined
+    this.activeAccountKey = undefined
     const socket = this.socket
     this.release()
     if (socket) {
@@ -253,21 +260,32 @@ export class WSClient {
     this.socket = socket
     this.socketToken = token
     this.socketAccountKey = accountKey
+    this.activeAccountKey = accountKey
+    this.socketOpened = false
+    this.hadTransportError = false
     this.authenticated = false
     this.authRejected = false
     this.authFatal = false
     socket.onopen = () => {
       if (socket !== this.socket) return
+      this.socketOpened = true
+      this.lastPreOpenFailedToken = undefined
       // Do not treat HTTP 101 open as authenticated; verify session via ping/pong first.
       this.startAuthProbe(socket)
     }
     socket.onclose = event => {
       if (socket !== this.socket) return
+      const wasOpened = this.socketOpened
       const wasAuthenticated = this.authenticated
       const hadErrorFrame = this.authRejected
-      const authRejected = this.authRejected || (!wasAuthenticated && event.code === WS_CLOSE_POLICY_VIOLATION)
+      const pre101Error = !wasOpened && this.hadTransportError
+      const repeatedPreOpenClose = !wasOpened && this.socketToken !== undefined && this.socketToken === this.lastPreOpenFailedToken
+      const authRejected = this.authRejected || (!wasAuthenticated && event.code === WS_CLOSE_POLICY_VIOLATION) || pre101Error || repeatedPreOpenClose
       const authFatal = this.authFatal
       const rejectedToken = this.rejectedToken ?? (authRejected ? this.socketToken : undefined)
+      if (!wasOpened && this.socketToken !== undefined) {
+        this.lastPreOpenFailedToken = this.socketToken
+      }
       this.release()
       if (!wasAuthenticated && event.code === WS_CLOSE_POLICY_VIOLATION && !hadErrorFrame) {
         this.emit('error', { kind: 'protocol', cause: new Error(event.reason || 'WebSocket handshake rejected') })
@@ -290,7 +308,9 @@ export class WSClient {
       this.emit('close', { code: event.code, reason: event.reason })
     }
     socket.onerror = cause => {
-      if (socket === this.socket) this.emit('error', { kind: 'transport', cause })
+      if (socket !== this.socket) return
+      this.hadTransportError = true
+      this.emit('error', { kind: 'transport', cause })
     }
     socket.onmessage = event => {
       if (socket === this.socket) this.receive(socket, event.data)
@@ -314,6 +334,7 @@ export class WSClient {
     this.retryCap = 1000
     this.authFailures = 0
     this.rejectedToken = undefined
+    this.lastPreOpenFailedToken = undefined
     this.heartbeat = setInterval(() => this.ping(socket), this.options.heartbeatMs ?? DEFAULT_HEARTBEAT_MS)
     const accountPending = this.socketAccountKey ? this.pendingByAccount.get(this.socketAccountKey) : undefined
     if (accountPending) {
@@ -332,6 +353,8 @@ export class WSClient {
     this.heartbeat = undefined
     this.awaitingPong = undefined
     this.authProbeNonce = undefined
+    this.socketOpened = false
+    this.hadTransportError = false
     this.authenticated = false
     this.authRejected = false
     this.authFatal = false
