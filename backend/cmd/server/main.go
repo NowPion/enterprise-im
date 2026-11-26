@@ -21,6 +21,7 @@ import (
 	"enterprise-im/backend/internal/config"
 	"enterprise-im/backend/internal/controller"
 	"enterprise-im/backend/internal/middleware"
+	"enterprise-im/backend/internal/mq"
 	pkgjwt "enterprise-im/backend/internal/pkg/jwt"
 	"enterprise-im/backend/internal/pkg/logger"
 	"enterprise-im/backend/internal/pkg/snowflake"
@@ -108,6 +109,15 @@ func run(configPath string) error {
 		_ = repository.CloseMySQL(db)
 		return fmt.Errorf("start websocket hub: %w", err)
 	}
+	if err := router.mqManager.Start(context.Background()); err != nil {
+		drainCtx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownTimeout)
+		_ = router.hub.Shutdown(drainCtx)
+		cancel()
+		_ = ln.Close()
+		_ = repository.CloseRedis(rdb)
+		_ = repository.CloseMySQL(db)
+		return fmt.Errorf("start mq consumers: %w", err)
+	}
 
 	srv := &http.Server{
 		Addr:         ln.Addr().String(),
@@ -119,12 +129,9 @@ func run(configPath string) error {
 
 	hooks := ShutdownHooks{
 		NotifyAndCloseWS: router.hub.Shutdown,
-		DrainMQ: func(context.Context) error {
-			log.Info("shutdown_mq_hook_noop", slog.String("reason", "no active mq consumers"))
-			return nil
-		},
-		CloseDB:    func() error { return repository.CloseMySQL(db) },
-		CloseRedis: func() error { return repository.CloseRedis(rdb) },
+		DrainMQ:          router.mqManager.Drain,
+		CloseDB:          func() error { return repository.CloseMySQL(db) },
+		CloseRedis:       func() error { return repository.CloseRedis(rdb) },
 	}
 
 	sigCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -135,7 +142,9 @@ func run(configPath string) error {
 
 type serverRouter struct {
 	*gin.Engine
-	hub *ws.Hub
+	hub        *ws.Hub
+	mqProducer *mq.StreamProducer
+	mqManager  *mq.ConsumerManager
 }
 
 func buildRouter(
@@ -171,6 +180,7 @@ func buildRouter(
 	assetRepo := repository.NewAssetRepository(db)
 	convRepo := repository.NewConversationRepository(db)
 	msgRepo := repository.NewMessageRepository(db, rdb)
+	receiptRepo := repository.NewReceiptRepository(db)
 	seqAllocator := repository.NewRedisSeqAllocator(rdb, 5*time.Second)
 	frPresence := repository.NewRedisPresenceChecker(rdb)
 
@@ -192,9 +202,22 @@ func buildRouter(
 	uploadSvc := service.NewUploadService(assetRepo, userPresenceRepo, uploadStorage, cfg.Upload, authCfg.JWT.Secret, log)
 	convSvc := service.NewConversationService(convRepo, friendRepo, log)
 	msgSvc := service.NewMessageService(convRepo, msgRepo, seqAllocator, idGen, hub, cfg.Chat.RecallWindow, log)
+	if cfg.Chat.DirectPushFallback {
+		// Explicit transition-only toggle when no im-msg-deliver consumer is attached; never both publish and direct-push.
+		msgSvc.SetDirectPushFallback(true)
+	} else {
+		// Default Stage 7+ production path: XADD im:stream:messages / im:stream:events; online msg.push is owned by im-msg-deliver.
+		msgSvc.SetStreamPublisher(newRedisStreamPublisherAdapter(repository.NewRedisStreamPublisher(rdb)))
+	}
+	receiptSvc := service.NewReceiptService(receiptRepo, friendRepo, nil, log)
 	hub.SetChatService(msgSvc)
+	hub.SetReceiptService(receiptSvc)
 	groupRepo := repository.NewGormGroupRepository(db)
 	groupSvc := service.NewGroupService(groupRepo, seqAllocator, frPresence, idGen, hub, log)
+
+	mqProducer := mq.NewProducer(rdb, cfg.MQ, log)
+	mqManager := mq.NewConsumerManager(cfg.MQ, cfg.App.NodeID, rdb, db, hub, log)
+	receiptSvc.SetEventPublisher(newMQReceiptEventPublisher(mqProducer))
 
 	router := api.NewRouterWithStage4(cfg, log, healthCtrl, api.Stage4Dependencies{
 		JWTAuth:           jwtAuth,
@@ -208,10 +231,94 @@ func buildRouter(
 		JWTAuth:                jwtAuth,
 		ConversationController: controller.NewConversationController(convSvc),
 		MessageController:      controller.NewMessageController(msgSvc),
+		ReceiptController:      controller.NewReceiptController(receiptSvc),
 	})
 	api.RegisterGroupRoutes(router, jwtAuth, controller.NewGroupController(groupSvc))
 	api.RegisterWSRoute(router, cfg, hub)
-	return &serverRouter{Engine: router, hub: hub}, nil
+	return &serverRouter{
+		Engine:     router,
+		hub:        hub,
+		mqProducer: mqProducer,
+		mqManager:  mqManager,
+	}, nil
+}
+
+type redisStreamPublisherAdapter struct {
+	pub *repository.RedisStreamPublisher
+}
+
+func newRedisStreamPublisherAdapter(pub *repository.RedisStreamPublisher) service.StreamPublisher {
+	if pub == nil {
+		return nil
+	}
+	return &redisStreamPublisherAdapter{pub: pub}
+}
+
+func (a *redisStreamPublisherAdapter) PublishMessage(ctx context.Context, msg service.StreamMessage) error {
+	return a.pub.PublishMessage(ctx, repository.StreamMessageInput{
+		Kind:           msg.Kind,
+		MessageID:      msg.MessageID,
+		ConversationID: msg.ConversationID,
+		Seq:            msg.Seq,
+		SenderID:       msg.SenderID,
+		PayloadRef:     msg.PayloadRef,
+		RecipientIDs:   msg.RecipientIDs,
+	})
+}
+
+func (a *redisStreamPublisherAdapter) PublishEvent(ctx context.Context, evt service.StreamEvent) error {
+	return a.pub.PublishEvent(ctx, repository.StreamEventInput{
+		Kind:           evt.Kind,
+		Event:          evt.Event,
+		ConversationID: evt.ConversationID,
+		ActorID:        evt.ActorID,
+		TargetUserID:   evt.TargetUserID,
+		TargetUserIDs:  evt.TargetUserIDs,
+		MessageID:      evt.MessageID,
+		Seq:            evt.Seq,
+		Payload:        evt.Payload,
+	})
+}
+
+
+type mqReceiptEventPublisher struct {
+	producer *mq.StreamProducer
+}
+
+func newMQReceiptEventPublisher(producer *mq.StreamProducer) service.ReceiptEventPublisher {
+	if producer == nil {
+		return nil
+	}
+	return &mqReceiptEventPublisher{producer: producer}
+}
+
+func (p *mqReceiptEventPublisher) PublishEvent(ctx context.Context, event service.ReceiptEvent) error {
+	var messageID, seq uint64
+	if event.MsgID != nil {
+		messageID = *event.MsgID
+	}
+	if event.Seq != nil {
+		seq = *event.Seq
+	}
+	var occurredAt time.Time
+	if ts := event.UpdatedAt; ts != "" {
+		if parsed, err := time.Parse("2006-01-02T15:04:05.000Z", ts); err == nil {
+			occurredAt = parsed
+		}
+	}
+	_, err := p.producer.PublishEvent(ctx, mq.EventRecord{
+		Kind:             event.Kind,
+		Event:            event.Kind,
+		ConversationID:   event.ConversationID,
+		ActorID:          event.UserID,
+		TargetUserIDs:    event.TargetUserIDs,
+		MessageID:        messageID,
+		Seq:              seq,
+		LastDeliveredSeq: event.LastDeliveredSeq,
+		LastReadSeq:      event.LastReadSeq,
+		OccurredAt:       occurredAt,
+	})
+	return err
 }
 
 func newLoggedNoopSessionRevokeHook(log *slog.Logger) service.SessionRevokeHook {

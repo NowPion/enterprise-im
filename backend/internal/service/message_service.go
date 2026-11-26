@@ -43,8 +43,48 @@ type SnowflakeIDGenerator interface {
 
 // RealtimeChatBroadcaster delivers real-time chat frames (msg.push / system.notice)
 // to online members connected to the WebSocket Hub.
+// Note: In Stage 7+ production flow, online msg.push is handled asynchronously by the
+// `im-msg-deliver` Redis Streams consumer group; direct Hub broadcast is disabled by default.
 type RealtimeChatBroadcaster interface {
 	BroadcastToUsers(ctx context.Context, userIDs []uint64, frameType string, data any)
+}
+
+// StreamMessage represents a committed message record published to `im:stream:messages`.
+type StreamMessage struct {
+	Kind           string
+	MessageID      uint64
+	ConversationID uint64
+	Seq            uint64
+	SenderID       uint64
+	PayloadRef     string
+	RecipientIDs   []uint64
+}
+
+// StreamEvent represents a domain event published to `im:stream:events`.
+type StreamEvent struct {
+	Kind           string
+	Event          string
+	ConversationID uint64
+	ActorID        uint64
+	TargetUserID   uint64
+	TargetUserIDs  []uint64
+	MessageID      uint64
+	Seq            uint64
+	Payload        map[string]any
+}
+
+// StreamPublisher publishes committed messages and events to Redis Streams after DB commit.
+// Online msg.push delivery is handled by `im-msg-deliver` (not by the sending goroutine).
+type StreamPublisher interface {
+	PublishMessage(ctx context.Context, msg StreamMessage) error
+	PublishEvent(ctx context.Context, evt StreamEvent) error
+}
+
+// MessageConvSeqFinder is an optional extension on MessageStore to reload an existing message
+// by (conversation_id, seq) when a uk_msg_conv_seq unique constraint conflict occurs.
+// *repository.MessageRepository satisfies this interface directly.
+type MessageConvSeqFinder interface {
+	FindMessageByConvSeq(ctx context.Context, convID, seq uint64) (*model.Message, error)
 }
 
 // MessageConversationStore defines conversation & membership operations needed by MessageService.
@@ -179,17 +219,21 @@ type SystemNoticePayload struct {
 
 // MessageService implements message history, incremental sync, idempotent send, recall, and system messages.
 type MessageService struct {
-	convStore    MessageConversationStore
-	msgStore     MessageStore
-	seqAllocator repository.SeqAllocator
-	idGen        SnowflakeIDGenerator
-	broadcaster  RealtimeChatBroadcaster
-	recallWindow time.Duration
-	nowFn        func() time.Time
-	log          *slog.Logger
+	convStore          MessageConversationStore
+	msgStore           MessageStore
+	seqAllocator       repository.SeqAllocator
+	idGen              SnowflakeIDGenerator
+	broadcaster        RealtimeChatBroadcaster
+	streamPublisher    StreamPublisher
+	directPushFallback bool
+	recallWindow       time.Duration
+	nowFn              func() time.Time
+	log                *slog.Logger
 }
 
 // NewMessageService constructs a MessageService.
+// By default directPushFallback is false so online msg.push is delivered via im-msg-deliver
+// after StreamPublisher XADD, rather than directly by the sending goroutine.
 func NewMessageService(
 	convStore MessageConversationStore,
 	msgStore MessageStore,
@@ -206,14 +250,15 @@ func NewMessageService(
 		log = slog.Default()
 	}
 	return &MessageService{
-		convStore:    convStore,
-		msgStore:     msgStore,
-		seqAllocator: seqAllocator,
-		idGen:        idGen,
-		broadcaster:  broadcaster,
-		recallWindow: recallWindow,
-		nowFn:        func() time.Time { return time.Now().UTC() },
-		log:          log,
+		convStore:          convStore,
+		msgStore:           msgStore,
+		seqAllocator:       seqAllocator,
+		idGen:              idGen,
+		broadcaster:        broadcaster,
+		directPushFallback: false,
+		recallWindow:       recallWindow,
+		nowFn:              func() time.Time { return time.Now().UTC() },
+		log:                log,
 	}
 }
 
@@ -221,6 +266,22 @@ func NewMessageService(
 func (s *MessageService) SetBroadcaster(broadcaster RealtimeChatBroadcaster) {
 	if s != nil {
 		s.broadcaster = broadcaster
+	}
+}
+
+// SetStreamPublisher configures the post-commit Redis Streams producer.
+// When set, online msg.push is handled solely by im-msg-deliver and direct Hub push is never invoked.
+func (s *MessageService) SetStreamPublisher(pub StreamPublisher) {
+	if s != nil {
+		s.streamPublisher = pub
+	}
+}
+
+// SetDirectPushFallback toggles the explicit transition/test fallback that directly broadcasts
+// via RealtimeChatBroadcaster when no StreamPublisher is attached. Defaults to false.
+func (s *MessageService) SetDirectPushFallback(enabled bool) {
+	if s != nil {
+		s.directPushFallback = enabled
 	}
 }
 
@@ -420,10 +481,12 @@ func (s *MessageService) SendMessage(
 	}
 
 	// Check MySQL fallback before taking conv:lock (handles expired Redis TTL >24h or flush).
+	// If streamPublisher is active and existing is still normal without an im:dedupe cache entry
+	// (e.g. retry after 14008 stream failure), fall through into im:dedupe:lock so concurrent retries serialize.
 	if existing, findErr := s.msgStore.FindMessageByClientMsgID(ctx, input.SenderID, parsed.ClientMsgID); findErr != nil {
 		return nil, s.mapStoreError(ctx, input.SenderID, "dedupe_mysql_precheck", findErr)
-	} else if existing != nil {
-		return s.handleExistingMessageReplay(ctx, conv, input.SenderID, parsed, existing, beforePush)
+	} else if existing != nil && (s.streamPublisher == nil || existing.Status == model.MessageStatusRecalled) {
+		return s.handleExistingMessageReplay(ctx, conv, input.SenderID, parsed, existing, beforePush, false)
 	}
 
 	// Acquire per-(sender, client_msg_id) short concurrency lock.
@@ -455,7 +518,8 @@ func (s *MessageService) SendMessage(
 	if existing, findErr := s.msgStore.FindMessageByClientMsgID(ctx, input.SenderID, parsed.ClientMsgID); findErr != nil {
 		return nil, s.mapStoreError(ctx, input.SenderID, "dedupe_mysql_recheck", findErr)
 	} else if existing != nil {
-		return s.handleExistingMessageReplay(ctx, conv, input.SenderID, parsed, existing, beforePush)
+		needPublish := s.streamPublisher != nil && existing.Status == model.MessageStatusNormal
+		return s.handleExistingMessageReplay(ctx, conv, input.SenderID, parsed, existing, beforePush, needPublish)
 	}
 
 	// Validate asset reference before taking conversation lock.
@@ -472,18 +536,43 @@ func (s *MessageService) SendMessage(
 		}
 	}
 
-	res, bizErr := s.commitNewMessage(ctx, input.SenderID, input.ConversationID, parsed)
+	res, conflictSeq, bizErr := s.commitNewMessage(ctx, input.SenderID, input.ConversationID, parsed)
 	if bizErr != nil {
 		// Handle rare race on uk_msg_sender_client as idempotent replay.
 		if bizErr.Code == errcode.ErrClientMsgIDConflict.Code {
 			if existing, findErr := s.msgStore.FindMessageByClientMsgID(ctx, input.SenderID, parsed.ClientMsgID); findErr == nil && existing != nil {
-				return s.handleExistingMessageReplay(ctx, conv, input.SenderID, parsed, existing, beforePush)
+				needPublish := s.streamPublisher != nil && existing.Status == model.MessageStatusNormal
+				return s.handleExistingMessageReplay(ctx, conv, input.SenderID, parsed, existing, beforePush, needPublish)
 			}
+		}
+		// Handle uk_msg_conv_seq conflict by reloading from MySQL and applying idempotency rules.
+		if conflictSeq > 0 {
+			if finder, ok := s.msgStore.(MessageConvSeqFinder); ok {
+				if existing, findErr := finder.FindMessageByConvSeq(ctx, input.ConversationID, conflictSeq); findErr == nil && existing != nil {
+					if existing.SenderID == input.SenderID && existing.ClientMsgID == parsed.ClientMsgID {
+						needPublish := s.streamPublisher != nil && existing.Status == model.MessageStatusNormal
+						return s.handleExistingMessageReplay(ctx, conv, input.SenderID, parsed, existing, beforePush, needPublish)
+					}
+				}
+			}
+			if existing, findErr := s.msgStore.FindMessageByClientMsgID(ctx, input.SenderID, parsed.ClientMsgID); findErr == nil && existing != nil {
+				needPublish := s.streamPublisher != nil && existing.Status == model.MessageStatusNormal
+				return s.handleExistingMessageReplay(ctx, conv, input.SenderID, parsed, existing, beforePush, needPublish)
+			}
+			return nil, errcode.ErrMessageInProgress
 		}
 		return nil, bizErr
 	}
 
-	// Best-effort populate im:dedupe cache after MySQL commit.
+	// Acknowledge persistence to sender (WS msg.ack) prior to XADD im:stream:messages.
+	if beforePush != nil {
+		beforePush(res)
+	}
+	if pubErr := s.deliverOrPublishNewMessage(ctx, res); pubErr != nil {
+		return nil, pubErr
+	}
+
+	// Best-effort populate im:dedupe cache after MySQL commit and Stream publish.
 	_ = s.msgStore.SetDedupeRecordNX(ctx, input.SenderID, parsed.ClientMsgID, repository.DedupeRecord{
 		MsgID:          res.Message.MsgID,
 		ConversationID: res.Message.ConversationID,
@@ -492,15 +581,11 @@ func (s *MessageService) SendMessage(
 		DeliveryStatus: model.ReceiptStatusSent,
 	}, defaultDedupeTTL)
 
-	if beforePush != nil {
-		beforePush(res)
-	}
-	s.pushNewMessage(ctx, res)
 	return res, nil
 }
 
 // PersistSystemMessage persists an ordered server-generated system message (sender_id=0)
-// and pushes it to online conversation members.
+// and publishes it to im:stream:messages (or falls back to direct Hub broadcast only when configured).
 func (s *MessageService) PersistSystemMessage(
 	ctx context.Context,
 	convID uint64,
@@ -540,11 +625,13 @@ func (s *MessageService) PersistSystemMessage(
 		ExtraJSON:   extraNorm,
 	}
 
-	res, bizErr := s.commitNewMessage(ctx, 0, convID, parsed)
+	res, _, bizErr := s.commitNewMessage(ctx, 0, convID, parsed)
 	if bizErr != nil {
 		return nil, bizErr
 	}
-	s.pushNewMessage(ctx, res)
+	if pubErr := s.deliverOrPublishNewMessage(ctx, res); pubErr != nil {
+		return nil, pubErr
+	}
 	return res, nil
 }
 
@@ -769,7 +856,9 @@ func (s *MessageService) RecallMessage(
 	if beforePush != nil {
 		beforePush(res)
 	}
-	s.pushRecallNotifications(ctx, res)
+	if pubErr := s.deliverOrPublishRecall(ctx, res); pubErr != nil {
+		return nil, pubErr
+	}
 	return res, nil
 }
 
@@ -778,10 +867,10 @@ func (s *MessageService) commitNewMessage(
 	senderID uint64,
 	convID uint64,
 	parsed validatedSendPayload,
-) (*SendMessageResult, *errcode.Error) {
+) (*SendMessageResult, uint64, *errcode.Error) {
 	lockToken, lockErr := s.seqAllocator.AcquireConvLock(ctx, convID)
 	if lockErr != nil {
-		return nil, s.mapSeqError(ctx, senderID, "send_acquire_conv_lock", lockErr)
+		return nil, 0, s.mapSeqError(ctx, senderID, "send_acquire_conv_lock", lockErr)
 	}
 	defer func() {
 		relCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -796,6 +885,8 @@ func (s *MessageService) commitNewMessage(
 		persisted    model.Message
 		recipientIDs []uint64
 		dupConflict  bool
+		seqConflict  bool
+		conflictSeq  uint64
 	)
 
 	txErr := s.msgStore.WithTx(ctx, func(tx *gorm.DB) error {
@@ -866,6 +957,11 @@ func (s *MessageService) commitNewMessage(
 				dupConflict = true
 				return newServiceError(errcode.ErrClientMsgIDConflict)
 			}
+			if repository.IsDuplicateConvSeqError(createErr) {
+				seqConflict = true
+				conflictSeq = persisted.Seq
+				return newServiceError(errcode.ErrInternalConsistency)
+			}
 			return s.mapStoreError(ctx, senderID, "send_create_message", createErr)
 		}
 
@@ -921,9 +1017,12 @@ func (s *MessageService) commitNewMessage(
 			cancel()
 		}
 		if dupConflict {
-			return nil, errcode.ErrClientMsgIDConflict
+			return nil, 0, errcode.ErrClientMsgIDConflict
 		}
-		return nil, s.unwrapServiceError(ctx, senderID, "send_message", txErr)
+		if seqConflict {
+			return nil, conflictSeq, errcode.ErrInternalConsistency
+		}
+		return nil, 0, s.unwrapServiceError(ctx, senderID, "send_message", txErr)
 	}
 
 	sent := model.ReceiptStatusSent
@@ -931,7 +1030,7 @@ func (s *MessageService) commitNewMessage(
 		Message:      toMessageDTO(persisted, &sent),
 		IsNew:        true,
 		RecipientIDs: recipientIDs,
-	}, nil
+	}, 0, nil
 }
 
 func (s *MessageService) resolveDedupeReplay(
@@ -959,7 +1058,7 @@ func (s *MessageService) resolveDedupeReplay(
 			return nil, s.mapStoreError(ctx, senderID, "dedupe_reload_by_id", err)
 		}
 	}
-	return s.handleExistingMessageReplay(ctx, conv, senderID, parsed, existing, beforePush)
+	return s.handleExistingMessageReplay(ctx, conv, senderID, parsed, existing, beforePush, false)
 }
 
 func (s *MessageService) handleExistingMessageReplay(
@@ -969,6 +1068,7 @@ func (s *MessageService) handleExistingMessageReplay(
 	parsed validatedSendPayload,
 	existing *model.Message,
 	beforePush func(res *SendMessageResult),
+	publishIfNeeded bool,
 ) (*SendMessageResult, *errcode.Error) {
 	if !matchesExistingPayload(existing, conv.ID, parsed) {
 		return nil, errcode.ErrClientMsgIDConflict
@@ -981,6 +1081,19 @@ func (s *MessageService) handleExistingMessageReplay(
 		}
 	}
 
+	res := &SendMessageResult{
+		Message: toMessageDTO(*existing, &deliveryStatus),
+		IsNew:   false,
+	}
+	if beforePush != nil {
+		beforePush(res)
+	}
+	if publishIfNeeded && s.streamPublisher != nil && existing.Status == model.MessageStatusNormal {
+		if pubErr := s.publishNewMessageToStream(ctx, res); pubErr != nil {
+			return nil, pubErr
+		}
+	}
+
 	_ = s.msgStore.SetDedupeRecordNX(ctx, senderID, parsed.ClientMsgID, repository.DedupeRecord{
 		MsgID:          existing.ID,
 		ConversationID: existing.ConversationID,
@@ -989,13 +1102,6 @@ func (s *MessageService) handleExistingMessageReplay(
 		DeliveryStatus: deliveryStatus,
 	}, defaultDedupeTTL)
 
-	res := &SendMessageResult{
-		Message: toMessageDTO(*existing, &deliveryStatus),
-		IsNew:   false,
-	}
-	if beforePush != nil {
-		beforePush(res)
-	}
 	return res, nil
 }
 
@@ -1110,6 +1216,107 @@ func (s *MessageService) lookupSingleDeliveryStatus(ctx context.Context, conv *m
 		return status, true
 	}
 	return model.ReceiptStatusSent, true
+}
+
+// deliverOrPublishNewMessage publishes newly committed messages to im:stream:messages.
+// 在线 msg.push 由 im-msg-deliver 负责；生产路径默认仅走 Publish，绝不与 hub 直推双推。
+// 仅当未配置 StreamPublisher 且明确启用 directPushFallback 时，才回退到旧直推开关。
+func (s *MessageService) deliverOrPublishNewMessage(ctx context.Context, res *SendMessageResult) *errcode.Error {
+	if res == nil {
+		return nil
+	}
+	if s.streamPublisher != nil {
+		return s.publishNewMessageToStream(ctx, res)
+	}
+	if s.directPushFallback {
+		s.pushNewMessage(ctx, res)
+	}
+	return nil
+}
+
+func (s *MessageService) publishNewMessageToStream(ctx context.Context, res *SendMessageResult) *errcode.Error {
+	if s.streamPublisher == nil || res == nil {
+		return nil
+	}
+	if err := s.streamPublisher.PublishMessage(ctx, StreamMessage{
+		Kind:           "message",
+		MessageID:      res.Message.MsgID,
+		ConversationID: res.Message.ConversationID,
+		Seq:            res.Message.Seq,
+		SenderID:       res.Message.SenderID,
+		PayloadRef:     fmt.Sprintf("mysql:messages:%d", res.Message.MsgID),
+		RecipientIDs:   res.RecipientIDs,
+	}); err != nil {
+		// Stream 生产失败不回滚已提交 MySQL 事务，返回 14008 供客户端以原 client_msg_id 安全重试。
+		s.log.ErrorContext(ctx, "stream_publish_message_failed",
+			slog.Uint64("msg_id", res.Message.MsgID),
+			slog.Uint64("conversation_id", res.Message.ConversationID),
+			slog.Uint64("seq", res.Message.Seq),
+			slog.Any("error", err),
+		)
+		return errcode.ErrStreamUnavailable
+	}
+	return nil
+}
+
+// deliverOrPublishRecall publishes committed recall record to im:stream:messages and
+// message.recalled event to im:stream:events(kind=recall).
+// 在线 msg.push 与 system.notice 由 im-msg-deliver / im-event-deliver 负责，生产路径不再直推 hub。
+func (s *MessageService) deliverOrPublishRecall(ctx context.Context, res *RecallMessageResult) *errcode.Error {
+	if res == nil {
+		return nil
+	}
+	if s.streamPublisher != nil {
+		if err := s.streamPublisher.PublishMessage(ctx, StreamMessage{
+			Kind:           "message",
+			MessageID:      res.RecallMessage.MsgID,
+			ConversationID: res.RecallMessage.ConversationID,
+			Seq:            res.RecallMessage.Seq,
+			SenderID:       res.RecallMessage.SenderID,
+			PayloadRef:     fmt.Sprintf("mysql:messages:%d", res.RecallMessage.MsgID),
+			RecipientIDs:   res.RecipientIDs,
+		}); err != nil {
+			s.log.ErrorContext(ctx, "stream_publish_recall_message_failed",
+				slog.Uint64("recall_msg_id", res.RecallMessage.MsgID),
+				slog.Uint64("conversation_id", res.RecallMessage.ConversationID),
+				slog.Any("error", err),
+			)
+			return errcode.ErrStreamUnavailable
+		}
+
+		recalledAtStr := ""
+		if res.RecalledMessage.RecalledAt != nil {
+			recalledAtStr = *res.RecalledMessage.RecalledAt
+		}
+		if err := s.streamPublisher.PublishEvent(ctx, StreamEvent{
+			Kind:           "recall",
+			Event:          "message.recalled",
+			ConversationID: res.RecallMessage.ConversationID,
+			ActorID:        res.RecallMessage.SenderID,
+			TargetUserIDs:  res.RecipientIDs,
+			MessageID:      res.RecalledMessage.MsgID,
+			Seq:            res.RecallMessage.Seq,
+			Payload: map[string]any{
+				"recalled_msg_id": strconv.FormatUint(res.RecalledMessage.MsgID, 10),
+				"recall_msg_id":   strconv.FormatUint(res.RecallMessage.MsgID, 10),
+				"recall_seq":      strconv.FormatUint(res.RecallMessage.Seq, 10),
+				"recalled_at":     recalledAtStr,
+			},
+		}); err != nil {
+			s.log.ErrorContext(ctx, "stream_publish_recall_event_failed",
+				slog.Uint64("recalled_msg_id", res.RecalledMessage.MsgID),
+				slog.Uint64("recall_msg_id", res.RecallMessage.MsgID),
+				slog.Uint64("conversation_id", res.RecallMessage.ConversationID),
+				slog.Any("error", err),
+			)
+			return errcode.ErrStreamUnavailable
+		}
+		return nil
+	}
+	if s.directPushFallback {
+		s.pushRecallNotifications(ctx, res)
+	}
+	return nil
 }
 
 func (s *MessageService) pushNewMessage(ctx context.Context, res *SendMessageResult) {

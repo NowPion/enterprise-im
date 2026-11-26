@@ -318,6 +318,67 @@ func TestLiveFriendRequestRepositoryIntegration(t *testing.T) {
 	if err != nil || seqVal != "1" {
 		t.Fatalf("expected Redis conv:seq restored to 1 after rollback, got %q (err=%v)", seqVal, err)
 	}
+
+	// 3. Verify dangling increment calibration: simulate process crash leaving conv:seq=99 while MySQL MAX(seq)=1.
+	if err := rdb.Set(ctx, fmt.Sprintf("conv:seq:%d", createdConvID), "99", 0).Err(); err != nil {
+		t.Fatalf("seed dangling conv:seq: %v", err)
+	}
+	token3, err := seqAlloc.AcquireConvLock(ctx, createdConvID)
+	if err != nil {
+		t.Fatalf("AcquireConvLock 3: %v", err)
+	}
+	err = repo.WithTx(ctx, func(tx *gorm.DB) error {
+		seqRes, allocErr := seqAlloc.AllocateNextSeq(ctx, tx, createdConvID, token3)
+		if allocErr != nil {
+			return allocErr
+		}
+		if seqRes.Seq != 2 {
+			return fmt.Errorf("expected calibrated seq=2 (not 100), got %d", seqRes.Seq)
+		}
+		return sentinelErr
+	})
+	_ = seqAlloc.ReleaseConvLock(ctx, createdConvID, token3)
+	if !errors.Is(err, sentinelErr) {
+		t.Fatalf("expected sentinelErr on dangling calibration tx, got %v", err)
+	}
+
+	// 4. Verify initializing missing conv:seq deletes the newly initialized key on rollback.
+	if err := rdb.Del(ctx, fmt.Sprintf("conv:seq:%d", createdConvID)).Err(); err != nil {
+		t.Fatalf("del conv:seq: %v", err)
+	}
+	token4, err := seqAlloc.AcquireConvLock(ctx, createdConvID)
+	if err != nil {
+		t.Fatalf("AcquireConvLock 4: %v", err)
+	}
+	err = repo.WithTx(ctx, func(tx *gorm.DB) error {
+		seqRes, allocErr := seqAlloc.AllocateNextSeq(ctx, tx, createdConvID, token4)
+		if allocErr != nil {
+			return allocErr
+		}
+		if seqRes.Seq != 2 {
+			return fmt.Errorf("expected seq=2 after init from MySQL, got %d", seqRes.Seq)
+		}
+		if rbErr := seqRes.Rollback(ctx); rbErr != nil {
+			return rbErr
+		}
+		return sentinelErr
+	})
+	_ = seqAlloc.ReleaseConvLock(ctx, createdConvID, token4)
+	if !errors.Is(err, sentinelErr) {
+		t.Fatalf("expected sentinelErr on missing-key rollback test, got %v", err)
+	}
+	if _, err := rdb.Get(ctx, fmt.Sprintf("conv:seq:%d", createdConvID)).Result(); !errors.Is(err, redis.Nil) {
+		t.Fatalf("expected newly initialized conv:seq to be deleted on rollback, got err=%v", err)
+	}
+
+	// 5. Verify lost lock token fails fast with ErrConvLockTimeout.
+	err = repo.WithTx(ctx, func(tx *gorm.DB) error {
+		_, allocErr := seqAlloc.AllocateNextSeq(ctx, tx, createdConvID, "wrong-or-expired-token")
+		return allocErr
+	})
+	if !errors.Is(err, ErrConvLockTimeout) {
+		t.Fatalf("expected ErrConvLockTimeout when lock not owned, got %v", err)
+	}
 }
 
 func lookupEnv(primary, fallback string) (string, bool) {

@@ -5,30 +5,37 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"sort"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
 
+	mysqldriver "github.com/go-sql-driver/mysql"
 	"gorm.io/gorm"
 
+	"enterprise-im/backend/internal/config"
 	"enterprise-im/backend/internal/model"
 	"enterprise-im/backend/internal/pkg/errcode"
+	"enterprise-im/backend/internal/pkg/logger"
 	"enterprise-im/backend/internal/pkg/snowflake"
 	"enterprise-im/backend/internal/repository"
 )
 
 type memMessageBackend struct {
 	*memChatStore
-	mu          sync.Mutex
-	messages    map[uint64]model.Message
-	byClientKey map[string]uint64
-	receipts    map[string]model.MessageReceipt
-	assets      map[string]model.Asset
-	dedupe      map[string]repository.DedupeRecord
-	dedupeLocks map[string]string
-	convSeqs    map[uint64]uint64
-	convLocks   map[uint64]string
+	mu           sync.Mutex
+	messages     map[uint64]model.Message
+	byClientKey  map[string]uint64
+	byConvSeq    map[string]uint64
+	receipts     map[string]model.MessageReceipt
+	assets       map[string]model.Asset
+	dedupe       map[string]repository.DedupeRecord
+	dedupeLocks  map[string]string
+	convSeqs     map[uint64]uint64
+	convLocks    map[uint64]string
+	createHookFn func(msg *model.Message) error
 }
 
 func newMemMessageBackend() *memMessageBackend {
@@ -36,6 +43,7 @@ func newMemMessageBackend() *memMessageBackend {
 		memChatStore: newMemChatStore(),
 		messages:     make(map[uint64]model.Message),
 		byClientKey:  make(map[string]uint64),
+		byConvSeq:    make(map[string]uint64),
 		receipts:     make(map[string]model.MessageReceipt),
 		assets:       make(map[string]model.Asset),
 		dedupe:       make(map[string]repository.DedupeRecord),
@@ -138,6 +146,17 @@ func (b *memMessageBackend) FindMessageByID(_ context.Context, msgID uint64) (*m
 	return &m, nil
 }
 
+func (b *memMessageBackend) FindMessageByConvSeq(_ context.Context, convID, seq uint64) (*model.Message, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	id, ok := b.byConvSeq[fmt.Sprintf("%d:%d", convID, seq)]
+	if !ok {
+		return nil, repository.ErrMessageNotFound
+	}
+	m := b.messages[id]
+	return &m, nil
+}
+
 func (b *memMessageBackend) LockConversationByID(_ context.Context, _ *gorm.DB, convID uint64) (*model.Conversation, error) {
 	b.memChatStore.mu.Lock()
 	defer b.memChatStore.mu.Unlock()
@@ -193,12 +212,25 @@ func (b *memMessageBackend) BindAssetToMessageTx(_ context.Context, _ *gorm.DB, 
 }
 
 func (b *memMessageBackend) CreateMessageTx(_ context.Context, _ *gorm.DB, msg *model.Message) error {
+	if b.createHookFn != nil {
+		if err := b.createHookFn(msg); err != nil {
+			return err
+		}
+	}
 	ck := fmt.Sprintf("%d:%s", msg.SenderID, msg.ClientMsgID)
 	if _, exists := b.byClientKey[ck]; exists {
 		return errors.New("duplicate")
 	}
+	cs := fmt.Sprintf("%d:%d", msg.ConversationID, msg.Seq)
+	if _, exists := b.byConvSeq[cs]; exists {
+		return &mysqldriver.MySQLError{
+			Number:  1062,
+			Message: "Duplicate entry for key 'messages.uk_msg_conv_seq'",
+		}
+	}
 	b.messages[msg.ID] = *msg
 	b.byClientKey[ck] = msg.ID
+	b.byConvSeq[cs] = msg.ID
 	return nil
 }
 
@@ -675,4 +707,681 @@ func TestMessageServiceSixTypesAssetsIdempotencyRecallAndSync(t *testing.T) {
 	if grpSyncErr != nil || len(grpSync.Items) != 1 || grpSync.Items[0].DeliveryStatus != nil {
 		t.Fatalf("expected disbanded group sync without per-msg delivery_status, got %+v err=%v", grpSync, grpSyncErr)
 	}
+}
+
+type recordedStreamPublisher struct {
+	mu          sync.Mutex
+	messages    []StreamMessage
+	events      []StreamEvent
+	failMsgErr  error
+	failEvtErr  error
+	onPublishFn func()
+}
+
+func (p *recordedStreamPublisher) PublishMessage(_ context.Context, msg StreamMessage) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.onPublishFn != nil {
+		p.onPublishFn()
+	}
+	if p.failMsgErr != nil {
+		return p.failMsgErr
+	}
+	p.messages = append(p.messages, msg)
+	return nil
+}
+
+func (p *recordedStreamPublisher) PublishEvent(_ context.Context, evt StreamEvent) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.failEvtErr != nil {
+		return p.failEvtErr
+	}
+	p.events = append(p.events, evt)
+	return nil
+}
+
+func TestMessageServiceStreamPublishOrderNoDirectPushAnd14008(t *testing.T) {
+	ctx := context.Background()
+	b := newMemMessageBackend()
+	idGen, err := snowflake.NewGenerator(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	broadcaster := &testBroadcaster{}
+	pub := &recordedStreamPublisher{}
+	now := time.Date(2026, 11, 26, 8, 0, 0, 0, time.UTC)
+
+	b.users[10001] = model.User{ID: 10001, Username: "alice", Nickname: "Alice"}
+	b.users[10002] = model.User{ID: 10002, Username: "bob", Nickname: "Bob"}
+	b.friendships[[2]uint64{10001, 10002}] = model.Friendship{UserID: 10001, FriendID: 10002, Status: 1}
+	b.friendships[[2]uint64{10002, 10001}] = model.Friendship{UserID: 10002, FriendID: 10001, Status: 1}
+	dk := "10001:10002"
+	b.convs[90001] = model.Conversation{ID: 90001, Type: model.ConversationTypeSingle, DirectKey: &dk}
+	b.convMembers[[2]uint64{90001, 10001}] = model.ConversationMember{ID: 1, ConversationID: 90001, UserID: 10001, IsVisible: true, JoinedAt: now}
+	b.convMembers[[2]uint64{90001, 10002}] = model.ConversationMember{ID: 2, ConversationID: 90001, UserID: 10002, IsVisible: true, JoinedAt: now}
+
+	svc := NewMessageService(b, b, b, idGen, broadcaster, 2*time.Minute, nil)
+	svc.nowFn = func() time.Time { return now }
+	svc.SetStreamPublisher(pub)
+	// Even if fallback flag is toggled on, StreamPublisher must prevent dual push.
+	svc.SetDirectPushFallback(true)
+
+	// 1. Verify order: MySQL commit -> beforePush (msg.ack) -> PublishMessage, and ZERO hub direct push.
+	var timeline []string
+	pub.onPublishFn = func() {
+		// Inside PublishMessage: message must already be committed in backend store.
+		if len(b.messages) == 0 {
+			t.Error("expected MySQL message persisted before PublishMessage")
+		}
+		timeline = append(timeline, "publish")
+	}
+	res1, bizErr := svc.SendMessage(ctx, SendMessageInput{
+		ConversationID: 90001,
+		SenderID:       10001,
+		ClientMsgID:    "s7-cmsg-1",
+		MsgType:        model.MessageTypeText,
+		Content:        "hello stream",
+	}, func(res *SendMessageResult) {
+		timeline = append(timeline, "msg.ack:"+strconv.FormatUint(res.Message.Seq, 10))
+	})
+	if bizErr != nil || !res1.IsNew || res1.Message.Seq != 1 {
+		t.Fatalf("unexpected SendMessage result: res=%+v err=%v", res1, bizErr)
+	}
+	if len(timeline) != 2 || timeline[0] != "msg.ack:1" || timeline[1] != "publish" {
+		t.Fatalf("expected commit -> msg.ack -> publish order, got %v", timeline)
+	}
+	if len(broadcaster.events) != 0 {
+		t.Fatalf("expected ZERO direct hub broadcasts when StreamPublisher is set, got %+v", broadcaster.events)
+	}
+	if len(pub.messages) != 1 || pub.messages[0].Kind != "message" || pub.messages[0].MessageID != res1.Message.MsgID || pub.messages[0].PayloadRef == "" {
+		t.Fatalf("unexpected published stream message: %+v", pub.messages)
+	}
+
+	// 2. Stream failure on SendMessage -> returns 14008, does NOT roll back DB, retry recovers idempotently.
+	pub.onPublishFn = nil
+	pub.failMsgErr = errors.New("redis stream down")
+	_, failErr := svc.SendMessage(ctx, SendMessageInput{
+		ConversationID: 90001,
+		SenderID:       10001,
+		ClientMsgID:    "s7-cmsg-14008",
+		MsgType:        model.MessageTypeText,
+		Content:        "persisted despite stream outage",
+	}, nil)
+	if failErr == nil || failErr.Code != errcode.ErrStreamUnavailable.Code {
+		t.Fatalf("expected 14008 ErrStreamUnavailable, got %v", failErr)
+	}
+	persistedRow, findErr := b.FindMessageByClientMsgID(ctx, 10001, "s7-cmsg-14008")
+	if findErr != nil || persistedRow == nil || persistedRow.Seq != 2 {
+		t.Fatalf("expected committed message seq=2 preserved after 14008, got %+v err=%v", persistedRow, findErr)
+	}
+
+	// Recover stream and advance receipt to delivered before retry; retry must return same msg_id/seq and latest delivery_status.
+	pub.failMsgErr = nil
+	b.mu.Lock()
+	r := b.receipts[fmt.Sprintf("%d:%d", persistedRow.ID, 10002)]
+	r.Status = model.ReceiptStatusDelivered
+	b.receipts[fmt.Sprintf("%d:%d", persistedRow.ID, 10002)] = r
+	b.mu.Unlock()
+
+	var ackAfterRetry MsgAckPayload
+	retryRes, retryErr := svc.SendMessage(ctx, SendMessageInput{
+		ConversationID: 90001,
+		SenderID:       10001,
+		ClientMsgID:    "s7-cmsg-14008",
+		MsgType:        model.MessageTypeText,
+		Content:        "persisted despite stream outage",
+	}, func(res *SendMessageResult) {
+		ackAfterRetry = MsgAckPayload{
+			ClientMsgID:    res.Message.ClientMsgID,
+			MsgID:          strconv.FormatUint(res.Message.MsgID, 10),
+			Seq:            strconv.FormatUint(res.Message.Seq, 10),
+			Status:         res.Message.Status,
+			DeliveryStatus: *res.Message.DeliveryStatus,
+		}
+	})
+	if retryErr != nil || retryRes.IsNew || retryRes.Message.MsgID != persistedRow.ID || retryRes.Message.Seq != 2 {
+		t.Fatalf("expected idempotent recovery after 14008, got res=%+v err=%v", retryRes, retryErr)
+	}
+	if retryRes.Message.DeliveryStatus == nil || *retryRes.Message.DeliveryStatus != model.ReceiptStatusDelivered || ackAfterRetry.DeliveryStatus != model.ReceiptStatusDelivered {
+		t.Fatalf("expected latest delivery_status=delivered on replay, got %+v ack=%+v", retryRes.Message.DeliveryStatus, ackAfterRetry)
+	}
+	if len(pub.messages) != 2 {
+		t.Fatalf("expected retry after 14008 to publish once to stream (total 2), got %d", len(pub.messages))
+	}
+
+	// Subsequent normal retry hits im:dedupe and must NOT duplicate stream XADD.
+	retry2, retry2Err := svc.SendMessage(ctx, SendMessageInput{
+		ConversationID: 90001,
+		SenderID:       10001,
+		ClientMsgID:    "s7-cmsg-14008",
+		MsgType:        model.MessageTypeText,
+		Content:        "persisted despite stream outage",
+	}, nil)
+	if retry2Err != nil || retry2.IsNew || len(pub.messages) != 2 {
+		t.Fatalf("expected dedupe hit without extra stream publish, got res=%+v err=%v pubCount=%d", retry2, retry2Err, len(pub.messages))
+	}
+
+	// 3. PersistSystemMessage publishes to im:stream:messages and surfaces 14008 without rollback.
+	pub.failMsgErr = errors.New("stream temporarily unavailable")
+	if _, sysFail := svc.PersistSystemMessage(ctx, 90001, "sys:s7:1", "系统提示", nil); sysFail == nil || sysFail.Code != errcode.ErrStreamUnavailable.Code {
+		t.Fatalf("expected 14008 on PersistSystemMessage stream failure, got %v", sysFail)
+	}
+	if sysRow, _ := b.FindMessageByClientMsgID(ctx, 0, "sys:s7:1"); sysRow == nil || sysRow.Seq != 3 {
+		t.Fatalf("expected system message seq=3 preserved after 14008, got %+v", sysRow)
+	}
+	pub.failMsgErr = nil
+
+	// 4. RecallMessage publishes recall record to im:stream:messages + message.recalled to im:stream:events(kind=recall), zero direct push.
+	var recallAcked bool
+	recallRes, recallErr := svc.RecallMessage(ctx, 10001, 90001, res1.Message.MsgID, func(res *RecallMessageResult) {
+		recallAcked = true
+	})
+	if recallErr != nil || !recallAcked || recallRes.RecallMessage.Seq != 4 {
+		t.Fatalf("unexpected RecallMessage result: res=%+v err=%v acked=%v", recallRes, recallErr, recallAcked)
+	}
+	if len(broadcaster.events) != 0 {
+		t.Fatalf("expected zero direct broadcasts on recall with StreamPublisher, got %+v", broadcaster.events)
+	}
+	if len(pub.messages) != 3 || pub.messages[2].MessageID != recallRes.RecallMessage.MsgID {
+		t.Fatalf("expected recall message published to im:stream:messages, got %+v", pub.messages)
+	}
+	if len(pub.events) != 1 || pub.events[0].Kind != "recall" || pub.events[0].Event != "message.recalled" {
+		t.Fatalf("expected recall event published to im:stream:events, got %+v", pub.events)
+	}
+	if pub.events[0].Payload["recalled_msg_id"] != strconv.FormatUint(res1.Message.MsgID, 10) ||
+		pub.events[0].Payload["recall_msg_id"] != strconv.FormatUint(recallRes.RecallMessage.MsgID, 10) ||
+		pub.events[0].Payload["recall_seq"] != "4" {
+		t.Fatalf("unexpected recall event payload: %+v", pub.events[0].Payload)
+	}
+
+	// Recall event stream failure returns 14008 without rolling back recall.
+	pub.failEvtErr = errors.New("events stream down")
+	if _, r14008 := svc.RecallMessage(ctx, 10001, 90001, persistedRow.ID, nil); r14008 == nil || r14008.Code != errcode.ErrStreamUnavailable.Code {
+		t.Fatalf("expected 14008 when recall event publish fails, got %v", r14008)
+	}
+	if reloaded, _ := b.FindMessageByID(ctx, persistedRow.ID); reloaded.Status != model.MessageStatusRecalled {
+		t.Fatalf("expected recalled status preserved on 14008, got %+v", reloaded)
+	}
+
+	// 5. Transition switch check: without StreamPublisher, default directPushFallback=false does NOT push;
+	//    explicitly enabling SetDirectPushFallback(true) restores legacy direct push for tests.
+	svcFallback := NewMessageService(b, b, b, idGen, broadcaster, 2*time.Minute, nil)
+	svcFallback.nowFn = func() time.Time { return now }
+	if _, err := svcFallback.SendMessage(ctx, SendMessageInput{
+		ConversationID: 90001, SenderID: 10001, ClientMsgID: "s7-no-fallback", MsgType: model.MessageTypeText, Content: "silent",
+	}, nil); err != nil {
+		t.Fatalf("SendMessage without publisher failed: %v", err)
+	}
+	if len(broadcaster.events) != 0 {
+		t.Fatalf("expected directPushFallback=false by default to suppress hub push, got %d", len(broadcaster.events))
+	}
+	svcFallback.SetDirectPushFallback(true)
+	if _, err := svcFallback.SendMessage(ctx, SendMessageInput{
+		ConversationID: 90001, SenderID: 10001, ClientMsgID: "s7-with-fallback", MsgType: model.MessageTypeText, Content: "legacy",
+	}, nil); err != nil {
+		t.Fatalf("SendMessage with fallback enabled failed: %v", err)
+	}
+	if len(broadcaster.events) != 1 || broadcaster.events[0].frameType != "msg.push" {
+		t.Fatalf("expected explicit transition fallback to broadcast msg.push, got %+v", broadcaster.events)
+	}
+}
+
+func TestMessageServiceConvSeqConflictAndSyncInvariants(t *testing.T) {
+	ctx := context.Background()
+	b := newMemMessageBackend()
+	idGen, err := snowflake.NewGenerator(2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 11, 26, 9, 0, 0, 0, time.UTC)
+
+	b.users[10001] = model.User{ID: 10001, Username: "alice", Nickname: "Alice"}
+	b.users[10002] = model.User{ID: 10002, Username: "bob", Nickname: "Bob"}
+	b.friendships[[2]uint64{10001, 10002}] = model.Friendship{UserID: 10001, FriendID: 10002, Status: 1}
+	b.friendships[[2]uint64{10002, 10001}] = model.Friendship{UserID: 10002, FriendID: 10001, Status: 1}
+	dk := "10001:10002"
+	b.convs[90001] = model.Conversation{ID: 90001, Type: model.ConversationTypeSingle, DirectKey: &dk}
+	b.convMembers[[2]uint64{90001, 10001}] = model.ConversationMember{ID: 1, ConversationID: 90001, UserID: 10001, IsVisible: true, JoinedAt: now}
+	b.convMembers[[2]uint64{90001, 10002}] = model.ConversationMember{ID: 2, ConversationID: 90001, UserID: 10002, IsVisible: true, JoinedAt: now}
+
+	svc := NewMessageService(b, b, b, idGen, nil, 2*time.Minute, nil)
+	svc.nowFn = func() time.Time { return now }
+	pub := &recordedStreamPublisher{}
+	svc.SetStreamPublisher(pub)
+
+	// Seed seq=1 already persisted for (10001, "cid-convseq-same"), but simulate uk_msg_conv_seq conflict on CreateMessageTx.
+	existingID, _ := idGen.NextID()
+	b.mu.Lock()
+	b.messages[existingID] = model.Message{
+		ID:             existingID,
+		ConversationID: 90001,
+		Seq:            1,
+		SenderID:       10001,
+		ClientMsgID:    "cid-convseq-same",
+		MsgType:        model.MessageTypeText,
+		Content:        "same payload",
+		Extra:          model.NullableJSON("{}"),
+		Status:         model.MessageStatusNormal,
+		CreatedAt:      now,
+	}
+	b.byConvSeq["90001:1"] = existingID
+	b.mu.Unlock()
+	// Force AllocateNextSeq to tentatively return seq=1 so uk_msg_conv_seq triggers!
+	b.createHookFn = func(msg *model.Message) error {
+		msg.Seq = 1
+		return &mysqldriver.MySQLError{
+			Number:  1062,
+			Message: "Duplicate entry '90001-1' for key 'messages.uk_msg_conv_seq'",
+		}
+	}
+
+	replayed, repErr := svc.SendMessage(ctx, SendMessageInput{
+		ConversationID: 90001,
+		SenderID:       10001,
+		ClientMsgID:    "cid-convseq-same",
+		MsgType:        model.MessageTypeText,
+		Content:        "same payload",
+	}, nil)
+	if repErr != nil || replayed.IsNew || replayed.Message.MsgID != existingID || replayed.Message.Seq != 1 {
+		t.Fatalf("expected idempotent recovery on uk_msg_conv_seq same sender/client, got res=%+v err=%v", replayed, repErr)
+	}
+
+	// Different sender/client occupying seq=1 must NOT leak existing message; returns retryable 14007.
+	_, foreignErr := svc.SendMessage(ctx, SendMessageInput{
+		ConversationID: 90001,
+		SenderID:       10002,
+		ClientMsgID:    "cid-convseq-other",
+		MsgType:        model.MessageTypeText,
+		Content:        "other sender",
+	}, nil)
+	if foreignErr == nil || foreignErr.Code != errcode.ErrMessageInProgress.Code {
+		t.Fatalf("expected 14007 when uk_msg_conv_seq owned by another sender/client, got %v", foreignErr)
+	}
+
+	// Verify SyncMessages strict ascending order, no duplicates, and upper bound <= conversation last_seq.
+	b.createHookFn = nil
+	b.mu.Lock()
+	b.byClientKey["10001:cid-convseq-same"] = existingID
+	b.memChatStore.mu.Lock()
+	c := b.convs[90001]
+	c.LastSeq = 1
+	c.LastMsgID = existingID
+	b.convs[90001] = c
+	b.memChatStore.mu.Unlock()
+	b.mu.Unlock()
+
+	for i := 2; i <= 5; i++ {
+		if _, err := svc.SendMessage(ctx, SendMessageInput{
+			ConversationID: 90001,
+			SenderID:       10001,
+			ClientMsgID:    fmt.Sprintf("sync-cid-%d", i),
+			MsgType:        model.MessageTypeText,
+			Content:        fmt.Sprintf("msg-%d", i),
+		}, nil); err != nil {
+			t.Fatalf("send sync msg %d failed: %v", i, err)
+		}
+	}
+
+	page1, err1 := svc.SyncMessages(ctx, 10002, 90001, 0, 3)
+	if err1 != nil || !page1.HasMore || len(page1.Items) != 3 || page1.FromSeq != "1" || page1.ToSeq != "3" {
+		t.Fatalf("unexpected sync page1: %+v err=%v", page1, err1)
+	}
+	page2, err2 := svc.SyncMessages(ctx, 10002, 90001, 3, 3)
+	if err2 != nil || page2.HasMore || len(page2.Items) != 2 || page2.FromSeq != "4" || page2.ToSeq != "5" {
+		t.Fatalf("unexpected sync page2: %+v err=%v", page2, err2)
+	}
+	seenSeq := make(map[uint64]bool)
+	var prev uint64
+	for _, it := range append(page1.Items, page2.Items...) {
+		if it.Seq <= prev || seenSeq[it.Seq] || it.Seq > 5 {
+			t.Fatalf("sync invariant violated at seq=%d prev=%d", it.Seq, prev)
+		}
+		seenSeq[it.Seq] = true
+		prev = it.Seq
+	}
+}
+
+type failingStreamPublisher struct {
+	fail bool
+	inner StreamPublisher
+}
+
+func (f *failingStreamPublisher) PublishMessage(ctx context.Context, msg StreamMessage) error {
+	if f.fail {
+		return errors.New("simulated stream outage")
+	}
+	return f.inner.PublishMessage(ctx, msg)
+}
+
+func (f *failingStreamPublisher) PublishEvent(ctx context.Context, evt StreamEvent) error {
+	if f.fail {
+		return errors.New("simulated stream outage")
+	}
+	return f.inner.PublishEvent(ctx, evt)
+}
+
+type svcStreamAdapter struct {
+	pub *repository.RedisStreamPublisher
+}
+
+func (a *svcStreamAdapter) PublishMessage(ctx context.Context, msg StreamMessage) error {
+	return a.pub.PublishMessage(ctx, repository.StreamMessageInput{
+		Kind:           msg.Kind,
+		MessageID:      msg.MessageID,
+		ConversationID: msg.ConversationID,
+		Seq:            msg.Seq,
+		SenderID:       msg.SenderID,
+		PayloadRef:     msg.PayloadRef,
+		RecipientIDs:   msg.RecipientIDs,
+	})
+}
+
+func (a *svcStreamAdapter) PublishEvent(ctx context.Context, evt StreamEvent) error {
+	return a.pub.PublishEvent(ctx, repository.StreamEventInput{
+		Kind:           evt.Kind,
+		Event:          evt.Event,
+		ConversationID: evt.ConversationID,
+		ActorID:        evt.ActorID,
+		TargetUserID:   evt.TargetUserID,
+		TargetUserIDs:  evt.TargetUserIDs,
+		MessageID:      evt.MessageID,
+		Seq:            evt.Seq,
+		Payload:        evt.Payload,
+	})
+}
+
+func TestLiveMessageServiceStage7ReliabilityIntegration(t *testing.T) {
+	mysqlPass := firstNonEmpty(os.Getenv("MYSQL_PASSWORD"), os.Getenv("IM_MYSQL_PASSWORD"))
+	redisPass := firstNonEmpty(os.Getenv("REDIS_PASSWORD"), os.Getenv("IM_REDIS_PASSWORD"))
+	if mysqlPass == "" && redisPass == "" {
+		t.Skip("skipping live MessageService Stage 7 integration test: env credentials not set")
+	}
+
+	host := firstNonEmpty(os.Getenv("MYSQL_HOST"), os.Getenv("IM_MYSQL_HOST"), "127.0.0.1")
+	port := 3306
+	if p := firstNonEmpty(os.Getenv("MYSQL_PORT"), os.Getenv("IM_MYSQL_PORT")); p != "" {
+		if parsed, err := strconv.Atoi(p); err == nil {
+			port = parsed
+		}
+	}
+	user := firstNonEmpty(os.Getenv("MYSQL_USER"), os.Getenv("IM_MYSQL_USER"), "root")
+	dbName := firstNonEmpty(os.Getenv("MYSQL_DATABASE"), os.Getenv("IM_MYSQL_DATABASE"), "enterprise_im")
+	redisAddr := firstNonEmpty(os.Getenv("REDIS_ADDR"), os.Getenv("IM_REDIS_ADDR"), "127.0.0.1:6379")
+
+	log, err := logger.New(config.LogConfig{Level: "warn", Format: "json"}, nil)
+	if err != nil {
+		t.Fatalf("new logger: %v", err)
+	}
+	db, err := repository.NewMySQL(config.MySQLConfig{
+		Host:            host,
+		Port:            port,
+		User:            user,
+		Password:        mysqlPass,
+		Database:        dbName,
+		Charset:         "utf8mb4",
+		MaxOpenConns:    20,
+		MaxIdleConns:    5,
+		ConnMaxLifetime: 5 * time.Minute,
+		DialTimeout:     3 * time.Second,
+	}, log)
+	if err != nil {
+		t.Fatalf("NewMySQL failed: %v", err)
+	}
+	defer func() { _ = repository.CloseMySQL(db) }()
+
+	rdb, err := repository.NewRedis(config.RedisConfig{
+		Addr:         redisAddr,
+		Password:     redisPass,
+		DB:           0,
+		PoolSize:     20,
+		MinIdleConns: 2,
+		DialTimeout:  3 * time.Second,
+		ReadTimeout:  2 * time.Second,
+		WriteTimeout: 2 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("NewRedis failed: %v", err)
+	}
+	defer func() { _ = repository.CloseRedis(rdb) }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	suffix := time.Now().UnixNano()
+	u1 := model.User{Username: fmt.Sprintf("s7_live_a_%d", suffix), PasswordHash: "$2a$10$8uLi1z7yKc9N28SrYAXW1uRurpmO9uk66JQjVxSE1Z8bSAtcbeE82", Nickname: "S7Alice", Role: model.UserRoleUser, Status: model.UserStatusActive}
+	u2 := model.User{Username: fmt.Sprintf("s7_live_b_%d", suffix), PasswordHash: "$2a$10$8uLi1z7yKc9N28SrYAXW1uRurpmO9uk66JQjVxSE1Z8bSAtcbeE82", Nickname: "S7Bob", Role: model.UserRoleUser, Status: model.UserStatusActive}
+	if err := db.WithContext(ctx).Create(&u1).Error; err != nil {
+		t.Fatalf("create u1: %v", err)
+	}
+	if err := db.WithContext(ctx).Create(&u2).Error; err != nil {
+		t.Fatalf("create u2: %v", err)
+	}
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	dk := repository.DirectKey(u1.ID, u2.ID)
+	conv := model.Conversation{Type: model.ConversationTypeSingle, DirectKey: &dk, CreatedAt: now, UpdatedAt: now}
+	if err := db.WithContext(ctx).Create(&conv).Error; err != nil {
+		t.Fatalf("create conv: %v", err)
+	}
+	if err := db.WithContext(ctx).Create(&[]model.Friendship{
+		{UserID: u1.ID, FriendID: u2.ID, Status: model.FriendshipStatusActive, CreatedAt: now, UpdatedAt: now},
+		{UserID: u2.ID, FriendID: u1.ID, Status: model.FriendshipStatusActive, CreatedAt: now, UpdatedAt: now},
+	}).Error; err != nil {
+		t.Fatalf("create friendships: %v", err)
+	}
+	if err := db.WithContext(ctx).Create(&[]model.ConversationMember{
+		{ConversationID: conv.ID, UserID: u1.ID, IsVisible: true, JoinedAt: now, UpdatedAt: now},
+		{ConversationID: conv.ID, UserID: u2.ID, IsVisible: true, JoinedAt: now, UpdatedAt: now},
+	}).Error; err != nil {
+		t.Fatalf("create conv members: %v", err)
+	}
+
+	var dedupeKeys []string
+	var streamMsgIDs []string
+	var streamEvtIDs []string
+	defer func() {
+		cleanupCtx, c := context.WithTimeout(context.Background(), 5*time.Second)
+		defer c()
+		_ = db.WithContext(cleanupCtx).Where("conversation_id = ?", conv.ID).Delete(&model.MessageReceipt{}).Error
+		_ = db.WithContext(cleanupCtx).Where("conversation_id = ?", conv.ID).Delete(&model.Message{}).Error
+		_ = db.WithContext(cleanupCtx).Where("conversation_id = ?", conv.ID).Delete(&model.ConversationMember{}).Error
+		_ = db.WithContext(cleanupCtx).Where("id = ?", conv.ID).Delete(&model.Conversation{}).Error
+		_ = db.WithContext(cleanupCtx).Where("(user_id = ? AND friend_id = ?) OR (user_id = ? AND friend_id = ?)", u1.ID, u2.ID, u2.ID, u1.ID).Delete(&model.Friendship{}).Error
+		_ = db.WithContext(cleanupCtx).Where("id IN ?", []uint64{u1.ID, u2.ID}).Delete(&model.User{}).Error
+		_ = rdb.Del(cleanupCtx, fmt.Sprintf("conv:seq:%d", conv.ID), fmt.Sprintf("conv:lock:%d", conv.ID)).Err()
+		if len(dedupeKeys) > 0 {
+			_ = rdb.Del(cleanupCtx, dedupeKeys...).Err()
+		}
+		if len(streamMsgIDs) > 0 {
+			_ = rdb.XDel(cleanupCtx, repository.StreamMessagesKey, streamMsgIDs...).Err()
+		}
+		if len(streamEvtIDs) > 0 {
+			_ = rdb.XDel(cleanupCtx, repository.StreamEventsKey, streamEvtIDs...).Err()
+		}
+	}()
+
+	convRepo := repository.NewConversationRepository(db)
+	msgRepo := repository.NewMessageRepository(db, rdb)
+	seqAlloc := repository.NewRedisSeqAllocator(rdb, 5*time.Second)
+	idGen, err := snowflake.NewGenerator(1)
+	if err != nil {
+		t.Fatalf("snowflake: %v", err)
+	}
+	broadcaster := &testBroadcaster{}
+	livePub := &svcStreamAdapter{pub: repository.NewRedisStreamPublisher(rdb)}
+	switchPub := &failingStreamPublisher{inner: livePub}
+
+	svc := NewMessageService(convRepo, msgRepo, seqAlloc, idGen, broadcaster, 2*time.Minute, log)
+	svc.SetStreamPublisher(switchPub)
+
+	// 1. Real MySQL + Redis 10x concurrent send with same client_msg_id -> 1 row, identical msg_id & seq=1, zero direct push.
+	concCID := fmt.Sprintf("s7-live-conc-%d", suffix)
+	dedupeKeys = append(dedupeKeys, repository.DedupeKey(u1.ID, concCID), repository.DedupeLockKey(u1.ID, concCID))
+	var wg sync.WaitGroup
+	resCh := make(chan *SendMessageResult, 10)
+	errCh := make(chan *errcode.Error, 10)
+	for range 10 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			r, sErr := svc.SendMessage(ctx, SendMessageInput{
+				ConversationID: conv.ID,
+				SenderID:       u1.ID,
+				ClientMsgID:    concCID,
+				MsgType:        model.MessageTypeText,
+				Content:        "live concurrent 10x",
+			}, nil)
+			if sErr != nil {
+				errCh <- sErr
+				return
+			}
+			resCh <- r
+		}()
+	}
+	wg.Wait()
+	close(resCh)
+	close(errCh)
+	for e := range errCh {
+		t.Fatalf("unexpected live concurrent error: %v", e)
+	}
+	var firstMsgID uint64
+	var newHits int
+	for r := range resCh {
+		if firstMsgID == 0 {
+			firstMsgID = r.Message.MsgID
+		}
+		if r.Message.MsgID != firstMsgID || r.Message.Seq != 1 {
+			t.Fatalf("live concurrent mismatch: got (%d,%d) want (%d,1)", r.Message.MsgID, r.Message.Seq, firstMsgID)
+		}
+		if r.IsNew {
+			newHits++
+		}
+	}
+	if newHits != 1 {
+		t.Fatalf("expected exactly 1 IsNew=true across 10 concurrent live sends, got %d", newHits)
+	}
+	var rowCount int64
+	if err := db.WithContext(ctx).Model(&model.Message{}).Where("sender_id = ? AND client_msg_id = ?", u1.ID, concCID).Count(&rowCount).Error; err != nil || rowCount != 1 {
+		t.Fatalf("expected 1 MySQL row for 10x concurrent send, got %d (err=%v)", rowCount, err)
+	}
+	if len(broadcaster.events) != 0 {
+		t.Fatalf("expected zero direct hub pushes in live production mode, got %d", len(broadcaster.events))
+	}
+
+	// Verify im:dedupe format & TTL 24h in live Redis.
+	dedupeRaw, err := rdb.Get(ctx, repository.DedupeKey(u1.ID, concCID)).Result()
+	wantVal := fmt.Sprintf("%d|%d|1|normal|sent", firstMsgID, conv.ID)
+	if err != nil || dedupeRaw != wantVal {
+		t.Fatalf("unexpected live im:dedupe value: got=%q want=%q err=%v", dedupeRaw, wantVal, err)
+	}
+	ttl, err := rdb.TTL(ctx, repository.DedupeKey(u1.ID, concCID)).Result()
+	if err != nil || ttl <= 23*time.Hour || ttl > 24*time.Hour {
+		t.Fatalf("expected ~24h TTL on im:dedupe, got %v (err=%v)", ttl, err)
+	}
+
+	// 2. Simulate receipt -> delivered in MySQL; replay returns delivery_status=delivered.
+	if err := db.WithContext(ctx).Model(&model.MessageReceipt{}).
+		Where("message_id = ? AND user_id = ?", firstMsgID, u2.ID).
+		Update("status", model.ReceiptStatusDelivered).Error; err != nil {
+		t.Fatalf("update receipt to delivered: %v", err)
+	}
+	repDeliv, repDelivErr := svc.SendMessage(ctx, SendMessageInput{
+		ConversationID: conv.ID,
+		SenderID:       u1.ID,
+		ClientMsgID:    concCID,
+		MsgType:        model.MessageTypeText,
+		Content:        "live concurrent 10x",
+	}, nil)
+	if repDelivErr != nil || repDeliv.Message.DeliveryStatus == nil || *repDeliv.Message.DeliveryStatus != model.ReceiptStatusDelivered {
+		t.Fatalf("expected replay delivery_status=delivered, got %+v err=%v", repDeliv, repDelivErr)
+	}
+
+	// 3. Simulate 14008 on live DB -> message persisted, retry succeeds idempotently without duplicate row.
+	cid14008 := fmt.Sprintf("s7-live-14008-%d", suffix)
+	dedupeKeys = append(dedupeKeys, repository.DedupeKey(u1.ID, cid14008), repository.DedupeLockKey(u1.ID, cid14008))
+	switchPub.fail = true
+	if _, err := svc.SendMessage(ctx, SendMessageInput{
+		ConversationID: conv.ID, SenderID: u1.ID, ClientMsgID: cid14008, MsgType: model.MessageTypeText, Content: "live 14008",
+	}, nil); err == nil || err.Code != errcode.ErrStreamUnavailable.Code {
+		t.Fatalf("expected 14008 on live stream failure, got %v", err)
+	}
+	switchPub.fail = false
+	r14008, r14008Err := svc.SendMessage(ctx, SendMessageInput{
+		ConversationID: conv.ID, SenderID: u1.ID, ClientMsgID: cid14008, MsgType: model.MessageTypeText, Content: "live 14008",
+	}, nil)
+	if r14008Err != nil || r14008.IsNew || r14008.Message.Seq != 2 {
+		t.Fatalf("expected idempotent recovery at seq=2 after live 14008, got %+v err=%v", r14008, r14008Err)
+	}
+
+	// 4. Simulate dangling conv:seq=99 in live Redis -> next send calibrates from MySQL MAX(seq)=2 and assigns seq=3.
+	if err := rdb.Set(ctx, fmt.Sprintf("conv:seq:%d", conv.ID), "99", 0).Err(); err != nil {
+		t.Fatalf("set dangling conv:seq: %v", err)
+	}
+	cidCal := fmt.Sprintf("s7-live-cal-%d", suffix)
+	dedupeKeys = append(dedupeKeys, repository.DedupeKey(u1.ID, cidCal), repository.DedupeLockKey(u1.ID, cidCal))
+	calRes, calErr := svc.SendMessage(ctx, SendMessageInput{
+		ConversationID: conv.ID, SenderID: u1.ID, ClientMsgID: cidCal, MsgType: model.MessageTypeText, Content: "calibrated seq 3",
+	}, nil)
+	if calErr != nil || calRes.Message.Seq != 3 {
+		t.Fatalf("expected calibrated seq=3 after dangling increment, got %+v err=%v", calRes, calErr)
+	}
+
+	// 5. Recall message -> im:stream:messages + im:stream:events(kind=recall), and replay reflects status=recalled.
+	recRes, recErr := svc.RecallMessage(ctx, u1.ID, conv.ID, firstMsgID, nil)
+	if recErr != nil || recRes.RecallMessage.Seq != 4 {
+		t.Fatalf("expected live recall seq=4, got %+v err=%v", recRes, recErr)
+	}
+	recReplay, recReplayErr := svc.SendMessage(ctx, SendMessageInput{
+		ConversationID: conv.ID, SenderID: u1.ID, ClientMsgID: concCID, MsgType: model.MessageTypeText, Content: "live concurrent 10x",
+	}, nil)
+	if recReplayErr != nil || recReplay.Message.Status != model.MessageStatusRecalled {
+		t.Fatalf("expected recalled status on live replay, got %+v err=%v", recReplay, recReplayErr)
+	}
+
+	// 6. SyncMessages verifies strict ascending seq 1..4 without duplicates.
+	syncOut, syncErr := svc.SyncMessages(ctx, u2.ID, conv.ID, 0, 10)
+	if syncErr != nil || len(syncOut.Items) != 4 || syncOut.FromSeq != "1" || syncOut.ToSeq != "4" {
+		t.Fatalf("unexpected live sync output: %+v err=%v", syncOut, syncErr)
+	}
+
+	// 7. Verify Redis Streams entries were XADDed and collect IDs for cleanup.
+	convStr := strconv.FormatUint(conv.ID, 10)
+	if entries, xErr := rdb.XRevRangeN(ctx, repository.StreamMessagesKey, "+", "-", 20).Result(); xErr != nil {
+		t.Fatalf("XRevRangeN messages: %v", xErr)
+	} else {
+		var msgStreamCount int
+		for _, e := range entries {
+			if e.Values["conversation_id"] == convStr {
+				streamMsgIDs = append(streamMsgIDs, e.ID)
+				msgStreamCount++
+			}
+		}
+		if msgStreamCount < 4 {
+			t.Fatalf("expected at least 4 entries in %s for conv %d, got %d", repository.StreamMessagesKey, conv.ID, msgStreamCount)
+		}
+	}
+	if evts, xErr := rdb.XRevRangeN(ctx, repository.StreamEventsKey, "+", "-", 20).Result(); xErr != nil {
+		t.Fatalf("XRevRangeN events: %v", xErr)
+	} else {
+		var recallEvtFound bool
+		for _, e := range evts {
+			if e.Values["conversation_id"] == convStr && e.Values["kind"] == "recall" {
+				streamEvtIDs = append(streamEvtIDs, e.ID)
+				recallEvtFound = true
+			}
+		}
+		if !recallEvtFound {
+			t.Fatalf("expected recall event in %s for conv %d", repository.StreamEventsKey, conv.ID)
+		}
+	}
+}
+
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }

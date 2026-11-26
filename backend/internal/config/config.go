@@ -25,6 +25,7 @@ type Config struct {
 	WS        WSConfig        `mapstructure:"ws"`
 	Upload    UploadConfig    `mapstructure:"upload"`
 	Chat      ChatConfig      `mapstructure:"chat"`
+	MQ        MQConfig        `mapstructure:"mq"`
 }
 
 // UploadConfig holds local media storage paths, size/dimension/duration limits, and signed download TTL.
@@ -56,7 +57,26 @@ func (u UploadConfig) MaxPossibleBytes() int64 {
 
 // ChatConfig holds chat messaging and recall policy settings.
 type ChatConfig struct {
-	RecallWindow time.Duration `mapstructure:"recall_window"`
+	RecallWindow       time.Duration `mapstructure:"recall_window"`
+	DirectPushFallback bool          `mapstructure:"direct_push_fallback"`
+}
+
+// MQConfig holds Redis Streams producer, consumer group, reclaim, dead-letter, and retention settings.
+type MQConfig struct {
+	StreamMaxLen               int64         `mapstructure:"stream_max_len"`
+	StreamRetention            time.Duration `mapstructure:"stream_retention"`
+	TrimInterval               time.Duration `mapstructure:"trim_interval"`
+	ReadCount                  int64         `mapstructure:"read_count"`
+	BlockTimeout               time.Duration `mapstructure:"block_timeout"`
+	ReclaimInterval            time.Duration `mapstructure:"reclaim_interval"`
+	ReclaimMinIdle             time.Duration `mapstructure:"reclaim_min_idle"`
+	MaxRetries                 int           `mapstructure:"max_retries"`
+	MaxPendingAge              time.Duration `mapstructure:"max_pending_age"`
+	DeadStreamMaxLen           int64         `mapstructure:"dead_stream_max_len"`
+	PendingReclaimTTL          time.Duration `mapstructure:"pending_reclaim_ttl"`
+	IdempotencyTTL             time.Duration `mapstructure:"idempotency_ttl"`
+	WorkerCount                int           `mapstructure:"worker_count"`
+	LargeGroupReceiptThreshold int           `mapstructure:"large_group_receipt_threshold"`
 }
 
 type WSConfig struct {
@@ -300,6 +320,21 @@ func (c *Config) Validate() error {
 	if c.Chat.RecallWindow <= 0 {
 		return errors.New("chat.recall_window must be positive")
 	}
+	if c.MQ.StreamMaxLen <= 0 || c.MQ.DeadStreamMaxLen <= 0 {
+		return errors.New("mq stream max len settings must be positive")
+	}
+	if c.MQ.StreamRetention <= 0 || c.MQ.TrimInterval <= 0 || c.MQ.PendingReclaimTTL <= 0 || c.MQ.IdempotencyTTL <= 0 {
+		return errors.New("mq retention and ttl settings must be positive")
+	}
+	if c.MQ.ReadCount <= 0 || c.MQ.BlockTimeout <= 0 {
+		return errors.New("mq read_count and block_timeout must be positive")
+	}
+	if c.MQ.ReclaimInterval <= 0 || c.MQ.ReclaimMinIdle <= 0 || c.MQ.MaxRetries <= 0 || c.MQ.MaxPendingAge <= 0 {
+		return errors.New("mq reclaim and retry settings must be positive")
+	}
+	if c.MQ.WorkerCount <= 0 || c.MQ.LargeGroupReceiptThreshold <= 0 {
+		return errors.New("mq worker_count and large_group_receipt_threshold must be positive")
+	}
 	return nil
 }
 
@@ -321,8 +356,13 @@ func (c *Config) RedactedSummary() map[string]any {
 		"redis_db":           c.Redis.DB,
 		"redis_password":     "[REDACTED]",
 		"snowflake_node_id":  c.Snowflake.NodeID,
-		"allowed_origins":    c.CORS.AllowedOrigins,
-		"chat_recall_window": c.Chat.RecallWindow.String(),
+		"allowed_origins":           c.CORS.AllowedOrigins,
+		"chat_recall_window":        c.Chat.RecallWindow.String(),
+		"chat_direct_push_fallback": c.Chat.DirectPushFallback,
+		"mq_stream_max_len":         c.MQ.StreamMaxLen,
+		"mq_retention":              c.MQ.StreamRetention.String(),
+		"mq_reclaim_idle":           c.MQ.ReclaimMinIdle.String(),
+		"mq_max_retries":            c.MQ.MaxRetries,
 	}
 }
 
@@ -383,11 +423,42 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("upload.thumbnail_max_dim", 320)
 	v.SetDefault("upload.download_url_ttl", "15m")
 	v.SetDefault("chat.recall_window", "2m")
+	v.SetDefault("chat.direct_push_fallback", false)
+
+	v.SetDefault("mq.stream_max_len", 100000)
+	v.SetDefault("mq.stream_retention", "168h")
+	v.SetDefault("mq.trim_interval", "5m")
+	v.SetDefault("mq.read_count", 100)
+	v.SetDefault("mq.block_timeout", "2s")
+	v.SetDefault("mq.reclaim_interval", "30s")
+	v.SetDefault("mq.reclaim_min_idle", "30s")
+	v.SetDefault("mq.max_retries", 5)
+	v.SetDefault("mq.max_pending_age", "15m")
+	v.SetDefault("mq.dead_stream_max_len", 50000)
+	v.SetDefault("mq.pending_reclaim_ttl", "24h")
+	v.SetDefault("mq.idempotency_ttl", "24h")
+	v.SetDefault("mq.worker_count", 1)
+	v.SetDefault("mq.large_group_receipt_threshold", 100)
 }
 
 func bindEnvs(v *viper.Viper) {
 	bindings := map[string][]string{
-		"chat.recall_window":           {"IM_CHAT_RECALL_WINDOW", "CHAT_RECALL_WINDOW"},
+		"chat.recall_window":               {"IM_CHAT_RECALL_WINDOW", "CHAT_RECALL_WINDOW"},
+		"chat.direct_push_fallback":        {"IM_CHAT_DIRECT_PUSH_FALLBACK", "CHAT_DIRECT_PUSH_FALLBACK"},
+		"mq.stream_max_len":                {"IM_MQ_STREAM_MAX_LEN", "MQ_STREAM_MAX_LEN"},
+		"mq.stream_retention":              {"IM_MQ_STREAM_RETENTION", "MQ_STREAM_RETENTION"},
+		"mq.trim_interval":                 {"IM_MQ_TRIM_INTERVAL", "MQ_TRIM_INTERVAL"},
+		"mq.read_count":                    {"IM_MQ_READ_COUNT", "MQ_READ_COUNT"},
+		"mq.block_timeout":                 {"IM_MQ_BLOCK_TIMEOUT", "MQ_BLOCK_TIMEOUT"},
+		"mq.reclaim_interval":              {"IM_MQ_RECLAIM_INTERVAL", "MQ_RECLAIM_INTERVAL"},
+		"mq.reclaim_min_idle":              {"IM_MQ_RECLAIM_MIN_IDLE", "MQ_RECLAIM_MIN_IDLE"},
+		"mq.max_retries":                   {"IM_MQ_MAX_RETRIES", "MQ_MAX_RETRIES"},
+		"mq.max_pending_age":               {"IM_MQ_MAX_PENDING_AGE", "MQ_MAX_PENDING_AGE"},
+		"mq.dead_stream_max_len":           {"IM_MQ_DEAD_STREAM_MAX_LEN", "MQ_DEAD_STREAM_MAX_LEN"},
+		"mq.pending_reclaim_ttl":           {"IM_MQ_PENDING_RECLAIM_TTL", "MQ_PENDING_RECLAIM_TTL"},
+		"mq.idempotency_ttl":               {"IM_MQ_IDEMPOTENCY_TTL", "MQ_IDEMPOTENCY_TTL"},
+		"mq.worker_count":                  {"IM_MQ_WORKER_COUNT", "MQ_WORKER_COUNT"},
+		"mq.large_group_receipt_threshold": {"IM_MQ_LARGE_GROUP_RECEIPT_THRESHOLD", "MQ_LARGE_GROUP_RECEIPT_THRESHOLD"},
 		"ws.heartbeat_timeout":         {"IM_WS_HEARTBEAT_TIMEOUT", "WS_HEARTBEAT_TIMEOUT"},
 		"ws.write_timeout":             {"IM_WS_WRITE_TIMEOUT", "WS_WRITE_TIMEOUT"},
 		"ws.max_frame_bytes":           {"IM_WS_MAX_FRAME_BYTES", "WS_MAX_FRAME_BYTES"},

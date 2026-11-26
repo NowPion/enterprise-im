@@ -47,6 +47,25 @@ if ARGV[2] == "DEL" then
 end
 return redis.call("SET", KEYS[2], ARGV[3])
 `)
+
+	allocateConvSeqScript = redis.NewScript(`
+if redis.call("GET", KEYS[1]) ~= ARGV[1] then
+	return {0, "LOCK_LOST"}
+end
+local prev = redis.call("GET", KEYS[2])
+local hadPrev = 1
+if not prev then
+	hadPrev = 0
+	prev = ""
+end
+local maxSeq = tonumber(ARGV[2])
+local prevNum = tonumber(prev)
+if hadPrev == 0 or prevNum == nil or prevNum ~= maxSeq then
+	redis.call("SET", KEYS[2], ARGV[2])
+end
+local nextSeq = redis.call("INCR", KEYS[2])
+return {1, tostring(nextSeq), tostring(hadPrev), tostring(prev)}
+`)
 )
 
 // DirectKey formats the canonical single-conversation unique key min(u1,u2):max(u1,u2).
@@ -156,47 +175,36 @@ func (a *RedisSeqAllocator) AllocateNextSeq(ctx context.Context, tx *gorm.DB, co
 	lockKey := convLockKey(convID)
 	seqKey := convSeqKey(convID)
 
-	// Verify we still hold the distributed lock before touching conv:seq.
-	holder, err := a.rdb.Get(ctx, lockKey).Result()
+	// Atomically verify lock ownership, calibrate conv:seq against MySQL MAX(seq), and INCR.
+	rawRes, err := allocateConvSeqScript.Run(ctx, a.rdb, []string{lockKey, seqKey}, lockToken, strconv.FormatUint(maxSeq, 10)).Result()
 	if err != nil {
-		return nil, fmt.Errorf("verify conv lock ownership: %w", err)
+		return nil, fmt.Errorf("allocate conv seq: %w", err)
 	}
-	if holder != lockToken {
+	items, ok := rawRes.([]any)
+	if !ok || len(items) < 2 {
+		return nil, fmt.Errorf("unexpected allocate conv seq response: %T", rawRes)
+	}
+	statusInt, err := toInt64(items[0])
+	if err != nil {
+		return nil, fmt.Errorf("parse allocate seq status: %w", err)
+	}
+	if statusInt == 0 {
 		return nil, ErrConvLockTimeout
 	}
-
-	prevVal, err := a.rdb.Get(ctx, seqKey).Result()
-	hadPrev := true
-	if errors.Is(err, redis.Nil) {
-		hadPrev = false
-		prevVal = ""
-	} else if err != nil {
-		return nil, fmt.Errorf("read conv seq cache: %w", err)
+	if len(items) < 4 {
+		return nil, errors.New("incomplete allocate seq response")
 	}
 
-	needsCalibrate := !hadPrev
-	if hadPrev {
-		parsed, parseErr := strconv.ParseUint(prevVal, 10, 64)
-		if parseErr != nil || parsed != maxSeq {
-			needsCalibrate = true
-		}
+	nextSeqStr := fmt.Sprint(items[1])
+	nextSeq, err := strconv.ParseUint(nextSeqStr, 10, 64)
+	if err != nil || nextSeq == 0 {
+		return nil, fmt.Errorf("invalid incremented seq %q: %w", nextSeqStr, err)
 	}
-	if needsCalibrate {
-		if err := a.rdb.Set(ctx, seqKey, strconv.FormatUint(maxSeq, 10), 0).Err(); err != nil {
-			return nil, fmt.Errorf("calibrate conv seq cache: %w", err)
-		}
-	}
-
-	nextSeqInt, err := a.rdb.Incr(ctx, seqKey).Result()
-	if err != nil {
-		return nil, fmt.Errorf("incr conv seq: %w", err)
-	}
-	if nextSeqInt <= 0 {
-		return nil, fmt.Errorf("invalid incremented seq %d", nextSeqInt)
-	}
+	hadPrev := fmt.Sprint(items[2]) == "1"
+	prevVal := fmt.Sprint(items[3])
 
 	return &SeqReservation{
-		Seq: uint64(nextSeqInt),
+		Seq: nextSeq,
 		Rollback: func(rbCtx context.Context) error {
 			mode := "SET"
 			val := prevVal
@@ -207,6 +215,17 @@ func (a *RedisSeqAllocator) AllocateNextSeq(ctx context.Context, tx *gorm.DB, co
 			return rollbackConvSeqScript.Run(rbCtx, a.rdb, []string{lockKey, seqKey}, lockToken, mode, val).Err()
 		},
 	}, nil
+}
+
+func toInt64(v any) (int64, error) {
+	switch t := v.(type) {
+	case int64:
+		return t, nil
+	case string:
+		return strconv.ParseInt(t, 10, 64)
+	default:
+		return strconv.ParseInt(fmt.Sprint(v), 10, 64)
+	}
 }
 
 // ReleaseConvLock releases conv:lock:{convID} if it is still owned by lockToken.

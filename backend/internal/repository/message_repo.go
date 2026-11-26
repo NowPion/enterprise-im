@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -20,6 +21,11 @@ const (
 	defaultDedupeTTL      = 24 * time.Hour
 	defaultDedupeLockTTL  = 10 * time.Second
 	defaultDedupeWaitTime = 500 * time.Millisecond
+
+	// StreamMessagesKey is the Redis Stream for committed messages and recall records.
+	StreamMessagesKey = "im:stream:messages"
+	// StreamEventsKey is the Redis Stream for domain events (recall, receipts, etc.).
+	StreamEventsKey = "im:stream:events"
 )
 
 var (
@@ -103,6 +109,146 @@ func IsDuplicateClientMsgError(err error) bool {
 			strings.Contains(mysqlErr.Message, "client_msg_id")
 	}
 	return false
+}
+
+// IsDuplicateConvSeqError reports whether err is a MySQL duplicate key error on uk_msg_conv_seq.
+func IsDuplicateConvSeqError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var mysqlErr *mysqldriver.MySQLError
+	if errors.As(err, &mysqlErr) && mysqlErr.Number == 1062 {
+		return strings.Contains(mysqlErr.Message, "uk_msg_conv_seq")
+	}
+	return false
+}
+
+// StreamMessageInput holds the frozen fields for XADD im:stream:messages.
+type StreamMessageInput struct {
+	Kind           string
+	MessageID      uint64
+	ConversationID uint64
+	Seq            uint64
+	SenderID       uint64
+	PayloadRef     string
+	RecipientIDs   []uint64
+}
+
+// StreamEventInput holds the frozen fields for XADD im:stream:events.
+type StreamEventInput struct {
+	Kind           string
+	Event          string
+	ConversationID uint64
+	ActorID        uint64
+	TargetUserID   uint64
+	TargetUserIDs  []uint64
+	MessageID      uint64
+	Seq            uint64
+	Payload        map[string]any
+}
+
+// RedisStreamPublisher publishes committed messages and events to Redis Streams via XADD.
+type RedisStreamPublisher struct {
+	rdb *redis.Client
+}
+
+// NewRedisStreamPublisher constructs a RedisStreamPublisher.
+func NewRedisStreamPublisher(rdb *redis.Client) *RedisStreamPublisher {
+	return &RedisStreamPublisher{rdb: rdb}
+}
+
+// PublishMessage appends a committed message record to im:stream:messages via XADD.
+func (p *RedisStreamPublisher) PublishMessage(ctx context.Context, msg StreamMessageInput) error {
+	if p == nil || p.rdb == nil {
+		return ErrRedisClientNil
+	}
+	if msg.MessageID == 0 || msg.ConversationID == 0 || msg.Seq == 0 {
+		return errors.New("stream message requires positive message_id, conversation_id, and seq")
+	}
+	kind := strings.TrimSpace(msg.Kind)
+	if kind == "" {
+		kind = "message"
+	}
+	payloadRef := strings.TrimSpace(msg.PayloadRef)
+	if payloadRef == "" {
+		payloadRef = fmt.Sprintf("mysql:messages:%d", msg.MessageID)
+	}
+	values := map[string]any{
+		"kind":            kind,
+		"message_id":      strconv.FormatUint(msg.MessageID, 10),
+		"conversation_id": strconv.FormatUint(msg.ConversationID, 10),
+		"seq":             strconv.FormatUint(msg.Seq, 10),
+		"sender_id":       strconv.FormatUint(msg.SenderID, 10),
+		"payload_ref":     payloadRef,
+	}
+	if len(msg.RecipientIDs) > 0 {
+		values["recipient_ids"] = joinUint64s(dedupePositiveUint64(msg.RecipientIDs))
+	}
+	return p.rdb.XAdd(ctx, &redis.XAddArgs{
+		Stream: StreamMessagesKey,
+		ID:     "*",
+		Values: values,
+	}).Err()
+}
+
+// PublishEvent appends a domain event to im:stream:events via XADD.
+func (p *RedisStreamPublisher) PublishEvent(ctx context.Context, evt StreamEventInput) error {
+	if p == nil || p.rdb == nil {
+		return ErrRedisClientNil
+	}
+	kind := strings.TrimSpace(evt.Kind)
+	if kind == "" {
+		return errors.New("stream event requires non-empty kind")
+	}
+	values := map[string]any{
+		"kind": kind,
+	}
+	if evt.Event != "" {
+		values["event"] = evt.Event
+	}
+	if evt.ConversationID > 0 {
+		values["conversation_id"] = strconv.FormatUint(evt.ConversationID, 10)
+	}
+	if evt.ActorID > 0 {
+		values["actor_id"] = strconv.FormatUint(evt.ActorID, 10)
+	}
+	if evt.TargetUserID > 0 {
+		values["target_user_id"] = strconv.FormatUint(evt.TargetUserID, 10)
+	}
+	if len(evt.TargetUserIDs) > 0 {
+		values["target_user_ids"] = joinUint64s(dedupePositiveUint64(evt.TargetUserIDs))
+	}
+	if evt.MessageID > 0 {
+		values["message_id"] = strconv.FormatUint(evt.MessageID, 10)
+	}
+	if evt.Seq > 0 {
+		values["seq"] = strconv.FormatUint(evt.Seq, 10)
+	}
+	if len(evt.Payload) > 0 {
+		raw, err := json.Marshal(evt.Payload)
+		if err != nil {
+			return fmt.Errorf("marshal stream event payload: %w", err)
+		}
+		values["payload"] = string(raw)
+		for _, k := range []string{"recalled_msg_id", "recall_msg_id", "recall_seq", "recalled_at"} {
+			if v, ok := evt.Payload[k]; ok {
+				values[k] = v
+			}
+		}
+	}
+	return p.rdb.XAdd(ctx, &redis.XAddArgs{
+		Stream: StreamEventsKey,
+		ID:     "*",
+		Values: values,
+	}).Err()
+}
+
+func joinUint64s(ids []uint64) string {
+	parts := make([]string, len(ids))
+	for i, id := range ids {
+		parts[i] = strconv.FormatUint(id, 10)
+	}
+	return strings.Join(parts, ",")
 }
 
 // MessageRepository provides MySQL and Redis persistence operations for messages, receipts, and assets.
@@ -240,6 +386,27 @@ func (r *MessageRepository) FindMessageByClientMsgID(ctx context.Context, sender
 	}
 	if err != nil {
 		return nil, fmt.Errorf("find message by client_msg_id: %w", err)
+	}
+	return &msg, nil
+}
+
+// FindMessageByConvSeq looks up a message by the unique key (conversation_id, seq).
+func (r *MessageRepository) FindMessageByConvSeq(ctx context.Context, convID, seq uint64) (*model.Message, error) {
+	if r == nil || r.db == nil {
+		return nil, ErrRepositoryUnavailable
+	}
+	if convID == 0 || seq == 0 {
+		return nil, ErrMessageNotFound
+	}
+	var msg model.Message
+	err := r.db.WithContext(ctx).
+		Where("conversation_id = ? AND seq = ?", convID, seq).
+		Take(&msg).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrMessageNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("find message by conv_seq: %w", err)
 	}
 	return &msg, nil
 }

@@ -21,12 +21,14 @@ func TestRegisterConversationRoutesFailClosedAndMountCleanly(t *testing.T) {
 
 	convCtrl := controller.NewConversationController(service.NewConversationService(nil, nil, log))
 	msgCtrl := controller.NewMessageController(service.NewMessageService(nil, nil, nil, nil, nil, 0, log))
+	receiptCtrl := controller.NewReceiptController(service.NewReceiptService(nil, nil, nil, log))
 
 	// Nil jwtAuth fails closed with 401/11001.
 	closed := NewRouter(&config.Config{}, log, nil)
 	RegisterConversationRoutes(closed, nil, convCtrl, msgCtrl)
+	RegisterReceiptRoutes(closed, nil, receiptCtrl)
 
-	stage6Endpoints := [][2]string{
+	chatEndpoints := [][2]string{
 		{http.MethodGet, "/api/v1/conversations"},
 		{http.MethodGet, "/api/v1/conversations/90001"},
 		{http.MethodPatch, "/api/v1/conversations/90001/settings"},
@@ -35,9 +37,12 @@ func TestRegisterConversationRoutesFailClosedAndMountCleanly(t *testing.T) {
 		{http.MethodGet, "/api/v1/conversations/90001/sync"},
 		{http.MethodPost, "/api/v1/conversations/90001/messages"},
 		{http.MethodPost, "/api/v1/conversations/90001/messages/1/recall"},
+		{http.MethodGet, "/api/v1/conversations/90001/messages/1/receipts"},
+		{http.MethodPost, "/api/v1/conversations/90001/read"},
+		{http.MethodPost, "/api/v1/conversations/90001/delivered"},
 	}
 
-	for _, ep := range stage6Endpoints {
+	for _, ep := range chatEndpoints {
 		w := httptest.NewRecorder()
 		req, _ := http.NewRequest(ep[0], ep[1], nil)
 		closed.ServeHTTP(w, req)
@@ -51,20 +56,17 @@ func TestRegisterConversationRoutesFailClosedAndMountCleanly(t *testing.T) {
 		}
 	}
 
-	// Stage 7 & out-of-scope routes must NOT be registered in Stage 6.
-	forbiddenStage7 := [][2]string{
-		{http.MethodPost, "/api/v1/conversations/90001/read"},
-		{http.MethodPost, "/api/v1/conversations/90001/delivered"},
-		{http.MethodGet, "/api/v1/conversations/90001/messages/1/receipts"},
+	// Out-of-scope routes must NOT be registered on conversation router.
+	unregistered := [][2]string{
 		{http.MethodPost, "/api/v1/groups"},
 		{http.MethodPost, "/api/v1/uploads"},
 	}
-	for _, ep := range forbiddenStage7 {
+	for _, ep := range unregistered {
 		w := httptest.NewRecorder()
 		req, _ := http.NewRequest(ep[0], ep[1], nil)
 		closed.ServeHTTP(w, req)
 		if w.Code != http.StatusNotFound {
-			t.Fatalf("%s %s should NOT be registered in Stage 6, got %d", ep[0], ep[1], w.Code)
+			t.Fatalf("%s %s should NOT be registered on conversation router, got %d", ep[0], ep[1], w.Code)
 		}
 	}
 
@@ -72,10 +74,18 @@ func TestRegisterConversationRoutesFailClosedAndMountCleanly(t *testing.T) {
 	grouped := NewRouter(&config.Config{}, log, nil)
 	v1 := grouped.Group("/api/v1")
 	RegisterConversationRoutes(v1, nil, convCtrl, msgCtrl)
-	wGrp := httptest.NewRecorder()
-	reqGrp, _ := http.NewRequest(http.MethodGet, "/api/v1/conversations", nil)
-	grouped.ServeHTTP(wGrp, reqGrp)
-	if wGrp.Code != http.StatusUnauthorized {
-		t.Fatalf("v1 mount expected 401 from nil jwtAuth guard, got %d", wGrp.Code)
+	RegisterReceiptRoutes(v1, nil, receiptCtrl)
+	for _, ep := range [][2]string{
+		{http.MethodGet, "/api/v1/conversations"},
+		{http.MethodPost, "/api/v1/conversations/90001/read"},
+		{http.MethodPost, "/api/v1/conversations/90001/delivered"},
+		{http.MethodGet, "/api/v1/conversations/90001/messages/1/receipts"},
+	} {
+		wGrp := httptest.NewRecorder()
+		reqGrp, _ := http.NewRequest(ep[0], ep[1], nil)
+		grouped.ServeHTTP(wGrp, reqGrp)
+		if wGrp.Code != http.StatusUnauthorized {
+			t.Fatalf("v1 mount %s %s expected 401 from nil jwtAuth guard, got %d", ep[0], ep[1], wGrp.Code)
+		}
 	}
 }
