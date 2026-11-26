@@ -3,6 +3,7 @@ package middleware
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,12 +19,13 @@ const ContextKeyAuthContext = "auth_context"
 
 // AuthContext holds the verified user, session, and token identity attached by JWTAuth.
 type AuthContext struct {
-	UserID    uint64
-	SessionID uint64
-	DeviceID  string
-	Role      string
-	JTI       string
-	ExpiresAt time.Time
+	UserID           uint64
+	SessionID        uint64
+	DeviceID         string
+	Role             string
+	JTI              string
+	ExpiresAt        time.Time
+	SessionExpiresAt time.Time
 }
 
 // AccessTokenVerifier verifies and parses Access JWT tokens.
@@ -71,110 +73,88 @@ func JWTAuth(verifier AccessTokenVerifier, store AuthStateStore) gin.HandlerFunc
 
 // JWTAuthWithClock creates a JWTAuth middleware with an optional UTC clock function.
 func JWTAuthWithClock(verifier AccessTokenVerifier, store AuthStateStore, nowFn func() time.Time) gin.HandlerFunc {
-	if nowFn == nil {
-		nowFn = func() time.Time { return time.Now().UTC() }
+	auth := NewAccessAuthenticator(verifier, store)
+	if nowFn != nil {
+		auth.now = nowFn
 	}
 	return func(c *gin.Context) {
-		if verifier == nil || store == nil {
-			errcode.Fail(c, errcode.ErrInternalConsistency)
+		token, _ := BearerToken(c.GetHeader("Authorization"))
+		identity, failure := auth.Authenticate(c.Request.Context(), token)
+		if failure != nil {
+			errcode.Fail(c, failure)
 			c.Abort()
 			return
 		}
-
-		tokenStr, ok := extractBearerToken(c.GetHeader("Authorization"))
-		if !ok {
-			errcode.Fail(c, errcode.ErrAccessTokenInvalid)
-			c.Abort()
-			return
-		}
-
-		claims, err := verifier.ParseAccessToken(tokenStr)
-		if err != nil {
-			errcode.Fail(c, errcode.ErrAccessTokenInvalid)
-			c.Abort()
-			return
-		}
-
-		userID, err := claims.UserID()
-		if err != nil {
-			errcode.Fail(c, errcode.ErrAccessTokenInvalid)
-			c.Abort()
-			return
-		}
-		sessionID, err := claims.SessionIDUint64()
-		if err != nil {
-			errcode.Fail(c, errcode.ErrAccessTokenInvalid)
-			c.Abort()
-			return
-		}
-
-		ctx := c.Request.Context()
-
-		status, role, err := store.GetUserAuthStatus(ctx, userID)
-		if err != nil {
-			if errors.Is(err, repository.ErrAuthUserNotFound) {
-				errcode.Fail(c, errcode.ErrAccessTokenInvalid)
-			} else {
-				errcode.Fail(c, errcode.ErrMySQLUnavailable)
-			}
-			c.Abort()
-			return
-		}
-		if status != model.UserStatusActive {
-			errcode.Fail(c, errcode.ErrAccountDisabled)
-			c.Abort()
-			return
-		}
-
-		blacklisted, _, err := store.IsAccessJTIBlacklisted(ctx, claims.ID)
-		if err != nil {
-			errcode.Fail(c, errcode.ErrRedisUnavailable)
-			c.Abort()
-			return
-		}
-		if blacklisted {
-			errcode.Fail(c, errcode.ErrAccessTokenBlacklisted)
-			c.Abort()
-			return
-		}
-
-		sess, err := store.GetSessionAuthState(ctx, sessionID)
-		if err != nil {
-			if errors.Is(err, repository.ErrSessionNotFound) {
-				errcode.Fail(c, errcode.ErrSessionRevoked)
-			} else {
-				errcode.Fail(c, errcode.ErrMySQLUnavailable)
-			}
-			c.Abort()
-			return
-		}
-		if sess.UserID != userID || sess.RevokedAt != nil || !sess.ExpiresAt.After(nowFn().UTC()) {
-			errcode.Fail(c, errcode.ErrSessionRevoked)
-			c.Abort()
-			return
-		}
-		if sess.AccessJTI != claims.ID {
-			errcode.Fail(c, errcode.ErrAccessTokenBlacklisted)
-			c.Abort()
-			return
-		}
-
-		var exp time.Time
-		if claims.ExpiresAt != nil {
-			exp = claims.ExpiresAt.Time.UTC()
-		}
-
-		errcode.SetUserID(c, claims.Subject)
-		c.Set(ContextKeyAuthContext, AuthContext{
-			UserID:    userID,
-			SessionID: sessionID,
-			DeviceID:  sess.DeviceID,
-			Role:      role,
-			JTI:       claims.ID,
-			ExpiresAt: exp,
-		})
+		errcode.SetUserID(c, strconv.FormatUint(identity.UserID, 10))
+		c.Set(ContextKeyAuthContext, identity)
 		c.Next()
 	}
+}
+
+type AccessAuthenticator struct {
+	verifier AccessTokenVerifier
+	store    AuthStateStore
+	now      func() time.Time
+}
+
+func NewAccessAuthenticator(verifier AccessTokenVerifier, store AuthStateStore) *AccessAuthenticator {
+	return &AccessAuthenticator{verifier: verifier, store: store, now: time.Now}
+}
+
+func (auth *AccessAuthenticator) Authenticate(ctx context.Context, token string) (AuthContext, *errcode.Error) {
+	if auth.verifier == nil || auth.store == nil {
+		return AuthContext{}, errcode.ErrInternalConsistency
+	}
+	claims, err := auth.verifier.ParseAccessToken(token)
+	if err != nil || claims == nil || claims.ExpiresAt == nil || claims.ID == "" {
+		return AuthContext{}, errcode.ErrAccessTokenInvalid
+	}
+	userID, userErr := claims.UserID()
+	sessionID, sessionErr := claims.SessionIDUint64()
+	if userErr != nil || sessionErr != nil {
+		return AuthContext{}, errcode.ErrAccessTokenInvalid
+	}
+	identity, _, failure := auth.Check(ctx, AuthContext{UserID: userID, SessionID: sessionID, JTI: claims.ID, ExpiresAt: claims.ExpiresAt.Time.UTC()})
+	return identity, failure
+}
+
+func (auth *AccessAuthenticator) Check(ctx context.Context, identity AuthContext) (AuthContext, string, *errcode.Error) {
+	if !identity.ExpiresAt.After(auth.now()) {
+		return identity, "", errcode.ErrAccessTokenInvalid
+	}
+	status, role, err := auth.store.GetUserAuthStatus(ctx, identity.UserID)
+	if errors.Is(err, repository.ErrAuthUserNotFound) {
+		return identity, "", errcode.ErrAccessTokenInvalid
+	}
+	if err != nil {
+		return identity, "", errcode.ErrMySQLUnavailable
+	}
+	if status != model.UserStatusActive {
+		return identity, "account.disabled", errcode.ErrAccountDisabled
+	}
+	blocked, reason, err := auth.store.IsAccessJTIBlacklisted(ctx, identity.JTI)
+	if err != nil {
+		return identity, "", errcode.ErrRedisUnavailable
+	}
+	if blocked {
+		return identity, reason, errcode.ErrAccessTokenBlacklisted
+	}
+	session, err := auth.store.GetSessionAuthState(ctx, identity.SessionID)
+	if errors.Is(err, repository.ErrSessionNotFound) {
+		return identity, "", errcode.ErrSessionRevoked
+	}
+	if err != nil {
+		return identity, "", errcode.ErrMySQLUnavailable
+	}
+	if session.UserID != identity.UserID || session.RevokedAt != nil || !session.ExpiresAt.After(auth.now()) ||
+		session.DeviceID == "" || (identity.DeviceID != "" && identity.DeviceID != session.DeviceID) {
+		return identity, "", errcode.ErrSessionRevoked
+	}
+	if session.AccessJTI != identity.JTI {
+		return identity, "", errcode.ErrAccessTokenBlacklisted
+	}
+	identity.Role, identity.DeviceID, identity.SessionExpiresAt = role, session.DeviceID, session.ExpiresAt.UTC()
+	return identity, "", nil
 }
 
 // GetAuthContext retrieves the authenticated identity attached by JWTAuth.
@@ -208,7 +188,7 @@ func GetAuthSessionID(c *gin.Context) (uint64, bool) {
 	return authCtx.SessionID, true
 }
 
-func extractBearerToken(header string) (string, bool) {
+func BearerToken(header string) (string, bool) {
 	if header == "" {
 		return "", false
 	}
