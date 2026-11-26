@@ -65,3 +65,6 @@ auth:
 
 health:
   probe_timeout: 2s
+
+chat:
+  recall_window: 2m

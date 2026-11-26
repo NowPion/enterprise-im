@@ -23,6 +23,12 @@ type Config struct {
 	Snowflake SnowflakeConfig `mapstructure:"snowflake"`
 	Health    HealthConfig    `mapstructure:"health"`
 	WS        WSConfig        `mapstructure:"ws"`
+	Chat      ChatConfig      `mapstructure:"chat"`
+}
+
+// ChatConfig holds chat messaging and recall policy settings.
+type ChatConfig struct {
+	RecallWindow time.Duration `mapstructure:"recall_window"`
 }
 
 type WSConfig struct {
@@ -243,28 +249,32 @@ func (c *Config) Validate() error {
 	if c.Health.ProbeTimeout <= 0 {
 		return errors.New("health.probe_timeout must be positive")
 	}
+	if c.Chat.RecallWindow <= 0 {
+		return errors.New("chat.recall_window must be positive")
+	}
 	return nil
 }
 
 // RedactedSummary returns non-sensitive runtime metadata safe for startup logs.
 func (c *Config) RedactedSummary() map[string]any {
 	return map[string]any{
-		"app_name":          c.App.Name,
-		"app_env":           c.App.Env,
-		"node_id":           c.App.NodeID,
-		"server_addr":       c.Server.Addr,
-		"shutdown_timeout":  c.Server.ShutdownTimeout.String(),
-		"log_level":         c.Log.Level,
-		"log_format":        c.Log.Format,
-		"mysql_host":        c.MySQL.Host,
-		"mysql_port":        c.MySQL.Port,
-		"mysql_database":    c.MySQL.Database,
-		"mysql_password":    "[REDACTED]",
-		"redis_addr":        c.Redis.Addr,
-		"redis_db":          c.Redis.DB,
-		"redis_password":    "[REDACTED]",
-		"snowflake_node_id": c.Snowflake.NodeID,
-		"allowed_origins":   c.CORS.AllowedOrigins,
+		"app_name":           c.App.Name,
+		"app_env":            c.App.Env,
+		"node_id":            c.App.NodeID,
+		"server_addr":        c.Server.Addr,
+		"shutdown_timeout":   c.Server.ShutdownTimeout.String(),
+		"log_level":          c.Log.Level,
+		"log_format":         c.Log.Format,
+		"mysql_host":         c.MySQL.Host,
+		"mysql_port":         c.MySQL.Port,
+		"mysql_database":     c.MySQL.Database,
+		"mysql_password":     "[REDACTED]",
+		"redis_addr":         c.Redis.Addr,
+		"redis_db":           c.Redis.DB,
+		"redis_password":     "[REDACTED]",
+		"snowflake_node_id":  c.Snowflake.NodeID,
+		"allowed_origins":    c.CORS.AllowedOrigins,
+		"chat_recall_window": c.Chat.RecallWindow.String(),
 	}
 }
 
@@ -311,10 +321,12 @@ func setDefaults(v *viper.Viper) {
 
 	v.SetDefault("snowflake.node_id", 1)
 	v.SetDefault("health.probe_timeout", "2s")
+	v.SetDefault("chat.recall_window", "2m")
 }
 
 func bindEnvs(v *viper.Viper) {
 	bindings := map[string][]string{
+		"chat.recall_window":       {"IM_CHAT_RECALL_WINDOW", "CHAT_RECALL_WINDOW"},
 		"ws.heartbeat_timeout":     {"IM_WS_HEARTBEAT_TIMEOUT", "WS_HEARTBEAT_TIMEOUT"},
 		"ws.write_timeout":         {"IM_WS_WRITE_TIMEOUT", "WS_WRITE_TIMEOUT"},
 		"ws.max_frame_bytes":       {"IM_WS_MAX_FRAME_BYTES", "WS_MAX_FRAME_BYTES"},
