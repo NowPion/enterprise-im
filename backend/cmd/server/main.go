@@ -1,0 +1,218 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"flag"
+	"fmt"
+	"log/slog"
+	"net"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"enterprise-im/backend/internal/api"
+	"enterprise-im/backend/internal/config"
+	"enterprise-im/backend/internal/controller"
+	"enterprise-im/backend/internal/pkg/logger"
+	"enterprise-im/backend/internal/pkg/snowflake"
+	"enterprise-im/backend/internal/repository"
+	"enterprise-im/backend/internal/service"
+)
+
+// ShutdownHooks encapsulates ordered graceful shutdown steps across layers.
+type ShutdownHooks struct {
+	NotifyAndCloseWS func(ctx context.Context) error
+	DrainMQ          func(ctx context.Context) error
+	CloseDB          func() error
+	CloseRedis       func() error
+}
+
+func main() {
+	configPath := flag.String("config", "", "optional path to config.yaml")
+	flag.Parse()
+
+	if err := run(*configPath); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "enterprise-im server exited with error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func run(configPath string) error {
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+
+	log, err := logger.InitGlobal(cfg.Log)
+	if err != nil {
+		return fmt.Errorf("init logger: %w", err)
+	}
+	log.Info("configuration_loaded", slog.Any("config", cfg.RedactedSummary()))
+
+	if _, err := snowflake.NewGenerator(cfg.Snowflake.NodeID); err != nil {
+		return fmt.Errorf("init snowflake generator: %w", err)
+	}
+
+	db, err := repository.NewMySQL(cfg.MySQL, log)
+	if err != nil {
+		return fmt.Errorf("init mysql: %w", err)
+	}
+	log.Info("mysql_connected", slog.String("host", cfg.MySQL.Host), slog.Int("port", cfg.MySQL.Port), slog.String("database", cfg.MySQL.Database))
+
+	rdb, err := repository.NewRedis(cfg.Redis)
+	if err != nil {
+		_ = repository.CloseMySQL(db)
+		return fmt.Errorf("init redis: %w", err)
+	}
+	log.Info("redis_connected", slog.String("addr", cfg.Redis.Addr), slog.Int("db", cfg.Redis.DB))
+
+	healthSvc := service.NewHealthService(
+		func(ctx context.Context) error { return repository.PingMySQL(ctx, db) },
+		func(ctx context.Context) error { return repository.PingRedis(ctx, rdb) },
+		cfg.Health.ProbeTimeout,
+		log,
+	)
+	healthCtrl := controller.NewHealthController(healthSvc)
+	router := api.NewRouter(cfg, log, healthCtrl)
+
+	ln, err := net.Listen("tcp", cfg.Server.Addr)
+	if err != nil {
+		_ = repository.CloseRedis(rdb)
+		_ = repository.CloseMySQL(db)
+		return fmt.Errorf("listen %s: %w", cfg.Server.Addr, err)
+	}
+
+	srv := &http.Server{
+		Addr:         ln.Addr().String(),
+		Handler:      router,
+		ReadTimeout:  cfg.Server.ReadTimeout,
+		WriteTimeout: cfg.Server.WriteTimeout,
+		IdleTimeout:  cfg.Server.IdleTimeout,
+	}
+
+	hooks := ShutdownHooks{
+		NotifyAndCloseWS: func(context.Context) error {
+			log.Info("shutdown_ws_hook_noop", slog.String("reason", "no active websocket hub in stage 3"))
+			return nil
+		},
+		DrainMQ: func(context.Context) error {
+			log.Info("shutdown_mq_hook_noop", slog.String("reason", "no active mq consumer in stage 3"))
+			return nil
+		},
+		CloseDB:    func() error { return repository.CloseMySQL(db) },
+		CloseRedis: func() error { return repository.CloseRedis(rdb) },
+	}
+
+	sigCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	return serveAndShutdown(sigCtx, log, srv, ln, cfg.Server.ShutdownTimeout, hooks)
+}
+
+func serveAndShutdown(
+	sigCtx context.Context,
+	log *slog.Logger,
+	srv *http.Server,
+	ln net.Listener,
+	shutdownTimeout time.Duration,
+	hooks ShutdownHooks,
+) error {
+	serveErrCh := make(chan error, 1)
+	go func() {
+		log.Info("http_server_listening", slog.String("addr", ln.Addr().String()))
+		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serveErrCh <- err
+			return
+		}
+		serveErrCh <- nil
+	}()
+
+	select {
+	case err := <-serveErrCh:
+		_ = closeInfrastructure(log, hooks)
+		return err
+	case <-sigCtx.Done():
+		log.Info("shutdown_signal_received")
+	}
+
+	if shutdownTimeout <= 0 {
+		shutdownTimeout = 15 * time.Second
+	}
+	timeoutCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
+
+	shutdownErr := executeOrderedShutdown(timeoutCtx, log, srv, hooks)
+	serveErr := <-serveErrCh
+	return errors.Join(shutdownErr, serveErr)
+}
+
+func executeOrderedShutdown(ctx context.Context, log *slog.Logger, srv *http.Server, hooks ShutdownHooks) error {
+	var errs []error
+
+	// Step 1: Stop accepting new HTTP requests immediately.
+	listenersClosed := make(chan struct{})
+	srv.RegisterOnShutdown(func() {
+		close(listenersClosed)
+	})
+	httpDone := make(chan error, 1)
+	go func() {
+		httpDone <- srv.Shutdown(ctx)
+	}()
+
+	select {
+	case <-listenersClosed:
+	case <-ctx.Done():
+		errs = append(errs, ctx.Err())
+	}
+	log.Info("shutdown_step_1_stop_accepting_http")
+
+	// Step 2: Notify and close WebSocket connections.
+	if hooks.NotifyAndCloseWS != nil {
+		if err := hooks.NotifyAndCloseWS(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("ws shutdown hook: %w", err))
+		}
+	}
+	log.Info("shutdown_step_2_websocket_closed")
+
+	// Step 3: Stop claiming new MQ tasks and drain active consumers.
+	if hooks.DrainMQ != nil {
+		if err := hooks.DrainMQ(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("mq drain hook: %w", err))
+		}
+	}
+	log.Info("shutdown_step_3_mq_drained")
+
+	// Step 4: Drain in-flight HTTP requests within timeout.
+	if err := <-httpDone; err != nil {
+		errs = append(errs, fmt.Errorf("http server shutdown: %w", err))
+	}
+	log.Info("shutdown_step_4_http_drained")
+
+	// Step 5: Close MySQL and Redis pools last.
+	if err := closeInfrastructure(log, hooks); err != nil {
+		errs = append(errs, err)
+	}
+	log.Info("shutdown_step_5_db_and_redis_closed")
+
+	return errors.Join(errs...)
+}
+
+func closeInfrastructure(log *slog.Logger, hooks ShutdownHooks) error {
+	var errs []error
+	if hooks.CloseDB != nil {
+		if err := hooks.CloseDB(); err != nil {
+			log.Error("mysql_close_failed", slog.Any("error", err))
+			errs = append(errs, fmt.Errorf("close mysql: %w", err))
+		}
+	}
+	if hooks.CloseRedis != nil {
+		if err := hooks.CloseRedis(); err != nil {
+			log.Error("redis_close_failed", slog.Any("error", err))
+			errs = append(errs, fmt.Errorf("close redis: %w", err))
+		}
+	}
+	return errors.Join(errs...)
+}

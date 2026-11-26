@@ -1,0 +1,52 @@
+# Enterprise IM Backend Default Configuration
+# Override sensitive values via environment variables (e.g. MYSQL_PASSWORD, REDIS_PASSWORD).
+app:
+  name: enterprise-im
+  env: development # development | production
+  node_id: node-1
+
+server:
+  addr: ":8080"
+  read_timeout: 10s
+  write_timeout: 15s
+  idle_timeout: 60s
+  shutdown_timeout: 15s
+  max_body_bytes: 1048576
+
+cors:
+  allowed_origins:
+    - "http://localhost:5173"
+    - "http://127.0.0.1:5173"
+
+log:
+  level: info # debug | info | warn | error
+  format: json # json | text
+
+mysql:
+  host: 127.0.0.1
+  port: 3306
+  user: root
+  password: "" # Set via MYSQL_PASSWORD or IM_MYSQL_PASSWORD
+  database: enterprise_im
+  charset: utf8mb4
+  max_open_conns: 50
+  max_idle_conns: 10
+  conn_max_lifetime: 30m
+  conn_max_idle_time: 10m
+  dial_timeout: 5s
+
+redis:
+  addr: 127.0.0.1:6379
+  password: "" # Set via REDIS_PASSWORD or IM_REDIS_PASSWORD
+  db: 0
+  pool_size: 50
+  min_idle_conns: 10
+  dial_timeout: 5s
+  read_timeout: 3s
+  write_timeout: 3s
+
+snowflake:
+  node_id: 1
+
+health:
+  probe_timeout: 2s
