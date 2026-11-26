@@ -221,8 +221,42 @@ func TestStage6GroupLifecyclePermissionsAndBroadcast(t *testing.T) {
 		})
 	}
 
-	// 8. Remove Charlie -> removing non-existent returns 15007; Charlie immediately blocked from reading/sending
-	//    and receives NO new msg.push broadcast when Alice sends a subsequent message.
+	// Upload a group attachment and send a message referencing it while Bob, Charlie, and Dave are active members.
+	grpImgBytes := makeStage6SamplePNG(12, 12)
+	grpUpSt, grpUpEnv, grpAsset, _ := rig.uploadTempFile(alice.AccessToken, model.AssetPurposeImage, "group-shared.png", "image/png", grpImgBytes)
+	assertStage6OK(t, "upload group attachment", grpUpSt, grpUpEnv, http.StatusCreated)
+
+	grpAttachAck := aliceWS.sendMsgAndAwaitAck(convID, uuid.NewString(), model.MessageTypeImage, "[图片]", map[string]any{
+		"asset_id": grpAsset.AssetID,
+	})
+	if grpAttachAck.Type != "msg.ack" {
+		t.Fatalf("expected msg.ack for group attachment message, got %s: %s", grpAttachAck.Type, string(grpAttachAck.Data))
+	}
+	grpAttachMsgID := decodeStage6JSON[struct {
+		MsgID string `json:"msg_id"`
+	}](t, grpAttachAck.Data).MsgID
+
+	for _, peer := range []struct {
+		name string
+		user stage6User
+		ws   *stage6WSClient
+	}{
+		{"bob", bob, bobWS},
+		{"charlie", charlie, charlieWS},
+		{"dave", dave, daveWS},
+	} {
+		peer.ws.awaitFrame(peer.name+" group attachment msg.push", stage6IOTimeout, func(f stage6WSFrame) bool {
+			if f.Type != "msg.push" {
+				return false
+			}
+			pt, m := decodeMsgPushMessage(t, f)
+			return pt == "message" && m.MsgID == grpAttachMsgID
+		})
+		rig.assertAssetAccessible(peer.user, grpAsset.AssetID, grpImgBytes, "active member "+peer.name+" group attachment")
+	}
+
+	// 8. Remove Charlie -> removing non-existent returns 15007; Charlie immediately blocked from reading/sending,
+	//    cannot GET/download group attachments (16004), and receives NO new msg.push broadcast when Alice sends a subsequent message.
 	remSt, _, remEnv, _ := rig.doRequest(http.MethodDelete, "/api/v1/groups/"+grp.ID+"/members/"+charlie.IDStr, bob.AccessToken, nil)
 	assertStage6OK(t, "admin remove charlie", remSt, remEnv, http.StatusOK)
 
@@ -231,6 +265,7 @@ func TestStage6GroupLifecyclePermissionsAndBroadcast(t *testing.T) {
 
 	charlieHistSt, _, charlieHistEnv, _ := rig.doRequest(http.MethodGet, "/api/v1/conversations/"+convID+"/messages", charlie.AccessToken, nil)
 	assertStage6BizErr(t, "removed member read history", charlieHistSt, charlieHistEnv, errcode.ErrNotConversationMember.Code, errcode.ErrNotGroupMember.Code)
+	rig.assertAssetDenied(charlie, grpAsset.AssetID, "removed member charlie group attachment")
 
 	charlieSendSt, _, charlieSendEnv, _ := rig.doRequest(http.MethodPost, "/api/v1/conversations/"+convID+"/messages", charlie.AccessToken, map[string]any{
 		"client_msg_id": uuid.NewString(),
@@ -286,6 +321,8 @@ func TestStage6GroupLifecyclePermissionsAndBroadcast(t *testing.T) {
 
 	daveAfterLeaveSt, _, daveAfterLeaveEnv, _ := rig.doRequest(http.MethodGet, "/api/v1/groups/"+grp.ID, dave.AccessToken, nil)
 	assertStage6BizErr(t, "left member get group", daveAfterLeaveSt, daveAfterLeaveEnv, errcode.ErrNotGroupMember.Code)
+	rig.assertAssetDenied(dave, grpAsset.AssetID, "left member dave group attachment")
+	rig.assertAssetAccessible(bob, grpAsset.AssetID, grpImgBytes, "remaining member bob group attachment")
 
 	ownerLeaveSt, _, ownerLeaveEnv, _ := rig.doRequest(http.MethodPost, "/api/v1/groups/"+grp.ID+"/leave", alice.AccessToken, nil)
 	assertStage6BizErr(t, "owner leave before transfer/disband", ownerLeaveSt, ownerLeaveEnv, errcode.ErrOwnerLeaveForbidden.Code)

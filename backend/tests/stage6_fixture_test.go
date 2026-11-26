@@ -16,6 +16,7 @@ import (
 	"math"
 	"mime/multipart"
 	"net/http"
+	"net/http/httptest"
 	"net/textproto"
 	"net/url"
 	"os"
@@ -765,10 +766,6 @@ func (r *stage6Rig) makeFriends(sender, recipient stage6User) (uint64, string, s
 
 func (r *stage6Rig) uploadTempFile(token, purpose, filename, mimeType string, content []byte) (int, stage6Envelope, stage6AssetDTO, []byte) {
 	r.t.Helper()
-	tmpPath := filepath.Join(r.t.TempDir(), filepath.Base(filename))
-	if err := os.WriteFile(tmpPath, content, 0o600); err != nil {
-		r.t.Fatalf("write temp upload file %s: %v", tmpPath, err)
-	}
 
 	var body bytes.Buffer
 	mw := multipart.NewWriter(&body)
@@ -778,6 +775,15 @@ func (r *stage6Rig) uploadTempFile(token, purpose, filename, mimeType string, co
 		}
 	}
 	if filename != "" {
+		base := filepath.Base(filename)
+		if base == "." || base == ".." || base == string(filepath.Separator) {
+			r.t.Fatalf("invalid upload filename %q", filename)
+		}
+		tmpPath := filepath.Join(r.t.TempDir(), base)
+		if err := os.WriteFile(tmpPath, content, 0o600); err != nil {
+			r.t.Fatalf("write temp upload file %s: %v", tmpPath, err)
+		}
+
 		f, err := os.Open(tmpPath)
 		if err != nil {
 			r.t.Fatalf("open temp upload file: %v", err)
@@ -785,7 +791,7 @@ func (r *stage6Rig) uploadTempFile(token, purpose, filename, mimeType string, co
 		defer f.Close()
 
 		hdr := make(textproto.MIMEHeader)
-		hdr.Set("Content-Disposition", fmt.Sprintf(`form-data; name="file"; filename=%q`, filepath.Base(filename)))
+		hdr.Set("Content-Disposition", fmt.Sprintf(`form-data; name="file"; filename=%q`, base))
 		if mimeType != "" {
 			hdr.Set("Content-Type", mimeType)
 		}
@@ -856,6 +862,33 @@ func (r *stage6Rig) downloadAuthorized(pathOrURL, token string) (int, http.Heade
 		r.t.Fatalf("read download %s: %v", target, err)
 	}
 	return resp.StatusCode, resp.Header, body
+}
+
+func (r *stage6Rig) assertAssetAccessible(user stage6User, assetID string, wantBytes []byte, desc string) {
+	r.t.Helper()
+	metaSt, _, metaEnv, metaRaw := r.doRequest(http.MethodGet, "/api/v1/uploads/"+assetID, user.AccessToken, nil)
+	assertStage6OK(r.t, desc+" get asset metadata", metaSt, metaEnv, http.StatusOK)
+	assertNoJSONStorageKeyLeak(r.t, desc+" get asset metadata", metaRaw)
+
+	dlSt, _, dlBody := r.downloadAuthorized("/api/v1/uploads/"+assetID+"/download", user.AccessToken)
+	if dlSt != http.StatusOK || sha256Hex(dlBody) != sha256Hex(wantBytes) {
+		r.t.Fatalf("%s download failed: status=%d sha_got=%s sha_want=%s",
+			desc, dlSt, sha256Hex(dlBody), sha256Hex(wantBytes))
+	}
+}
+
+func (r *stage6Rig) assertAssetDenied(user stage6User, assetID, desc string) {
+	r.t.Helper()
+	metaSt, _, metaEnv, _ := r.doRequest(http.MethodGet, "/api/v1/uploads/"+assetID, user.AccessToken, nil)
+	assertStage6BizErr(r.t, desc+" get asset metadata", metaSt, metaEnv, errcode.ErrAssetAccessDenied.Code)
+
+	dlSt, _, dlBody := r.downloadAuthorized("/api/v1/uploads/"+assetID+"/download", user.AccessToken)
+	var dlEnv stage6Envelope
+	if err := json.Unmarshal(dlBody, &dlEnv); err != nil {
+		r.t.Fatalf("%s download (HTTP %d) did not return JSON error envelope: %v; body=%s",
+			desc, dlSt, err, string(dlBody))
+	}
+	assertStage6BizErr(r.t, desc+" download asset", dlSt, dlEnv, errcode.ErrAssetAccessDenied.Code)
 }
 
 func decodeWrappedOrFlat[T any](t *testing.T, data json.RawMessage, wrapperKey string) T {
@@ -1280,4 +1313,32 @@ func mergeStage6Env(base []string, overrides map[string]string) []string {
 		out = append(out, k+"="+v)
 	}
 	return out
+}
+
+func TestStage6UploadTempFileOmitsFileFieldWhenFilenameEmpty(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Fatalf("parse multipart form: %v", err)
+		}
+		if r.FormValue("purpose") != model.AssetPurposeImage {
+			t.Fatalf("expected purpose=%q, got %q", model.AssetPurposeImage, r.FormValue("purpose"))
+		}
+		if files := r.MultipartForm.File["file"]; len(files) != 0 {
+			t.Fatalf("expected missing file field when filename is empty, got %d files", len(files))
+		}
+		const reqID = "r-stage6-empty-file"
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set(errcode.HeaderRequestID, reqID)
+		w.WriteHeader(errcode.ErrUploadInvalidFile.HTTPStatus)
+		_ = json.NewEncoder(w).Encode(errcode.Envelope{
+			Code:      errcode.ErrUploadInvalidFile.Code,
+			Message:   errcode.ErrUploadInvalidFile.Message,
+			RequestID: reqID,
+		})
+	}))
+	defer srv.Close()
+
+	rig := &stage6Rig{t: t, baseURL: srv.URL, httpClient: srv.Client()}
+	st, env, _, _ := rig.uploadTempFile("test-token", model.AssetPurposeImage, "", "", nil)
+	assertStage6BizErr(t, "empty filename omits file field", st, env, errcode.ErrUploadInvalidFile.Code)
 }
