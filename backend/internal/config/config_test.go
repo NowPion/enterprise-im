@@ -91,4 +91,34 @@ func TestLoadValidationErrors(t *testing.T) {
 	if _, err := Load("../../configs/config.yaml"); err == nil {
 		t.Fatal("expected error for out-of-range snowflake.node_id")
 	}
+
+	t.Setenv("SNOWFLAKE_NODE_ID", "1")
+	t.Setenv("UPLOAD_MAX_IMAGE_BYTES", "0")
+	if _, err := Load("../../configs/config.yaml"); err == nil {
+		t.Fatal("expected error for non-positive upload.max_image_bytes")
+	}
+}
+
+func TestLoadUploadConfigOverrides(t *testing.T) {
+	t.Setenv("UPLOAD_DIR", "/tmp/custom-uploads")
+	t.Setenv("UPLOAD_MAX_IMAGE_BYTES", "2097152")
+	t.Setenv("UPLOAD_MAX_VOICE_DURATION_MS", "60000")
+	t.Setenv("UPLOAD_DOWNLOAD_URL_TTL", "5m")
+
+	cfg, err := Load("../../configs/config.yaml")
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.Upload.Dir != "/tmp/custom-uploads" {
+		t.Fatalf("unexpected upload.dir: %q", cfg.Upload.Dir)
+	}
+	if cfg.Upload.MaxImageBytes != 2097152 {
+		t.Fatalf("unexpected upload.max_image_bytes: %d", cfg.Upload.MaxImageBytes)
+	}
+	if cfg.Upload.MaxVoiceDurationMs != 60000 {
+		t.Fatalf("unexpected upload.max_voice_duration_ms: %d", cfg.Upload.MaxVoiceDurationMs)
+	}
+	if cfg.Upload.DownloadURLTTL.Minutes() != 5 {
+		t.Fatalf("unexpected upload.download_url_ttl: %v", cfg.Upload.DownloadURLTTL)
+	}
 }

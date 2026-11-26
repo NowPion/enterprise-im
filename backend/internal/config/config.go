@@ -23,6 +23,34 @@ type Config struct {
 	Snowflake SnowflakeConfig `mapstructure:"snowflake"`
 	Health    HealthConfig    `mapstructure:"health"`
 	WS        WSConfig        `mapstructure:"ws"`
+	Upload    UploadConfig    `mapstructure:"upload"`
+}
+
+// UploadConfig holds local media storage paths, size/dimension/duration limits, and signed download TTL.
+type UploadConfig struct {
+	Dir                string        `mapstructure:"dir"`
+	TempDir            string        `mapstructure:"temp_dir"`
+	MaxImageBytes      int64         `mapstructure:"max_image_bytes"`
+	MaxFileBytes       int64         `mapstructure:"max_file_bytes"`
+	MaxVoiceBytes      int64         `mapstructure:"max_voice_bytes"`
+	MaxAvatarBytes     int64         `mapstructure:"max_avatar_bytes"`
+	MaxImageWidth      int           `mapstructure:"max_image_width"`
+	MaxImageHeight     int           `mapstructure:"max_image_height"`
+	MaxImagePixels     int64         `mapstructure:"max_image_pixels"`
+	MaxVoiceDurationMs uint32        `mapstructure:"max_voice_duration_ms"`
+	ThumbnailMaxDim    int           `mapstructure:"thumbnail_max_dim"`
+	DownloadURLTTL     time.Duration `mapstructure:"download_url_ttl"`
+}
+
+// MaxPossibleBytes returns the largest per-purpose upload size limit configured.
+func (u UploadConfig) MaxPossibleBytes() int64 {
+	maxBytes := u.MaxImageBytes
+	for _, v := range []int64{u.MaxFileBytes, u.MaxVoiceBytes, u.MaxAvatarBytes} {
+		if v > maxBytes {
+			maxBytes = v
+		}
+	}
+	return maxBytes
 }
 
 type WSConfig struct {
@@ -176,6 +204,8 @@ func (c *Config) normalize() {
 	c.App.Env = strings.ToLower(strings.TrimSpace(c.App.Env))
 	c.Log.Level = strings.ToLower(strings.TrimSpace(c.Log.Level))
 	c.Log.Format = strings.ToLower(strings.TrimSpace(c.Log.Format))
+	c.Upload.Dir = strings.TrimSpace(c.Upload.Dir)
+	c.Upload.TempDir = strings.TrimSpace(c.Upload.TempDir)
 
 	cleaned := make([]string, 0, len(c.CORS.AllowedOrigins))
 	for _, origin := range c.CORS.AllowedOrigins {
@@ -242,6 +272,24 @@ func (c *Config) Validate() error {
 	}
 	if c.Health.ProbeTimeout <= 0 {
 		return errors.New("health.probe_timeout must be positive")
+	}
+	if strings.TrimSpace(c.Upload.Dir) == "" {
+		return errors.New("upload.dir must not be empty")
+	}
+	if c.Upload.MaxImageBytes <= 0 || c.Upload.MaxFileBytes <= 0 || c.Upload.MaxVoiceBytes <= 0 || c.Upload.MaxAvatarBytes <= 0 {
+		return errors.New("upload max byte limits must be positive")
+	}
+	if c.Upload.MaxImageWidth <= 0 || c.Upload.MaxImageHeight <= 0 || c.Upload.MaxImagePixels <= 0 {
+		return errors.New("upload image dimension and pixel limits must be positive")
+	}
+	if c.Upload.MaxVoiceDurationMs == 0 {
+		return errors.New("upload.max_voice_duration_ms must be positive")
+	}
+	if c.Upload.ThumbnailMaxDim <= 0 {
+		return errors.New("upload.thumbnail_max_dim must be positive")
+	}
+	if c.Upload.DownloadURLTTL <= 0 {
+		return errors.New("upload.download_url_ttl must be positive")
 	}
 	return nil
 }
@@ -311,6 +359,19 @@ func setDefaults(v *viper.Viper) {
 
 	v.SetDefault("snowflake.node_id", 1)
 	v.SetDefault("health.probe_timeout", "2s")
+
+	v.SetDefault("upload.dir", "./uploads")
+	v.SetDefault("upload.temp_dir", "")
+	v.SetDefault("upload.max_image_bytes", 10485760)
+	v.SetDefault("upload.max_file_bytes", 52428800)
+	v.SetDefault("upload.max_voice_bytes", 10485760)
+	v.SetDefault("upload.max_avatar_bytes", 5242880)
+	v.SetDefault("upload.max_image_width", 8192)
+	v.SetDefault("upload.max_image_height", 8192)
+	v.SetDefault("upload.max_image_pixels", 25000000)
+	v.SetDefault("upload.max_voice_duration_ms", 300000)
+	v.SetDefault("upload.thumbnail_max_dim", 320)
+	v.SetDefault("upload.download_url_ttl", "15m")
 }
 
 func bindEnvs(v *viper.Viper) {
@@ -349,8 +410,20 @@ func bindEnvs(v *viper.Viper) {
 		"redis.dial_timeout":       {"IM_REDIS_DIAL_TIMEOUT", "REDIS_DIAL_TIMEOUT"},
 		"redis.read_timeout":       {"IM_REDIS_READ_TIMEOUT", "REDIS_READ_TIMEOUT"},
 		"redis.write_timeout":      {"IM_REDIS_WRITE_TIMEOUT", "REDIS_WRITE_TIMEOUT"},
-		"snowflake.node_id":        {"IM_SNOWFLAKE_NODE_ID", "SNOWFLAKE_NODE_ID"},
-		"health.probe_timeout":     {"IM_HEALTH_PROBE_TIMEOUT", "HEALTH_PROBE_TIMEOUT"},
+		"snowflake.node_id":           {"IM_SNOWFLAKE_NODE_ID", "SNOWFLAKE_NODE_ID"},
+		"health.probe_timeout":        {"IM_HEALTH_PROBE_TIMEOUT", "HEALTH_PROBE_TIMEOUT"},
+		"upload.dir":                  {"IM_UPLOAD_DIR", "UPLOAD_DIR"},
+		"upload.temp_dir":             {"IM_UPLOAD_TEMP_DIR", "UPLOAD_TEMP_DIR"},
+		"upload.max_image_bytes":      {"IM_UPLOAD_MAX_IMAGE_BYTES", "UPLOAD_MAX_IMAGE_BYTES"},
+		"upload.max_file_bytes":       {"IM_UPLOAD_MAX_FILE_BYTES", "UPLOAD_MAX_FILE_BYTES"},
+		"upload.max_voice_bytes":      {"IM_UPLOAD_MAX_VOICE_BYTES", "UPLOAD_MAX_VOICE_BYTES"},
+		"upload.max_avatar_bytes":     {"IM_UPLOAD_MAX_AVATAR_BYTES", "UPLOAD_MAX_AVATAR_BYTES"},
+		"upload.max_image_width":      {"IM_UPLOAD_MAX_IMAGE_WIDTH", "UPLOAD_MAX_IMAGE_WIDTH"},
+		"upload.max_image_height":     {"IM_UPLOAD_MAX_IMAGE_HEIGHT", "UPLOAD_MAX_IMAGE_HEIGHT"},
+		"upload.max_image_pixels":     {"IM_UPLOAD_MAX_IMAGE_PIXELS", "UPLOAD_MAX_IMAGE_PIXELS"},
+		"upload.max_voice_duration_ms": {"IM_UPLOAD_MAX_VOICE_DURATION_MS", "UPLOAD_MAX_VOICE_DURATION_MS"},
+		"upload.thumbnail_max_dim":    {"IM_UPLOAD_THUMBNAIL_MAX_DIM", "UPLOAD_THUMBNAIL_MAX_DIM"},
+		"upload.download_url_ttl":     {"IM_UPLOAD_DOWNLOAD_URL_TTL", "UPLOAD_DOWNLOAD_URL_TTL"},
 	}
 	for key, envs := range bindings {
 		args := append([]string{key}, envs...)

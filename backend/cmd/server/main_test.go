@@ -262,6 +262,7 @@ func TestBuildRouterMountsHealthzAndAllStage4Routes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
+	cfg.Upload.Dir = t.TempDir()
 	authCfg, err := config.LoadAuthConfig("../../configs/config.yaml")
 	if err != nil {
 		t.Fatalf("load auth config: %v", err)
@@ -318,6 +319,11 @@ func TestBuildRouterMountsHealthzAndAllStage4Routes(t *testing.T) {
 		"GET /api/v1/friends",
 		"PATCH /api/v1/friends/:friend_id",
 		"DELETE /api/v1/friends/:friend_id",
+		"POST /api/v1/uploads",
+		"GET /api/v1/uploads/:asset_id",
+		"GET /api/v1/uploads/:asset_id/download",
+		"DELETE /api/v1/uploads/:asset_id",
+		"POST /api/v1/me/avatar",
 	}
 	for _, key := range expectedRoutes {
 		if !registered[key] {
@@ -339,6 +345,11 @@ func TestBuildRouterMountsHealthzAndAllStage4Routes(t *testing.T) {
 		{http.MethodGet, "/api/v1/friends"},
 		{http.MethodPatch, "/api/v1/friends/1"},
 		{http.MethodDelete, "/api/v1/friends/1"},
+		{http.MethodPost, "/api/v1/uploads"},
+		{http.MethodGet, "/api/v1/uploads/550e8400-e29b-41d4-a716-446655440000"},
+		{http.MethodGet, "/api/v1/uploads/550e8400-e29b-41d4-a716-446655440000/download"},
+		{http.MethodDelete, "/api/v1/uploads/550e8400-e29b-41d4-a716-446655440000"},
+		{http.MethodPost, "/api/v1/me/avatar"},
 	}
 	for _, tc := range protectedSamples {
 		w := httptest.NewRecorder()
