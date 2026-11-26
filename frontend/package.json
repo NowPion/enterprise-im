@@ -1,0 +1,11 @@
+{
+  "name": "im-ws-client",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "vitest run", "typecheck": "tsc --noEmit" },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "typescript": "~5.6.3",
+    "vitest": "^3.2.6"
+  }
+}
