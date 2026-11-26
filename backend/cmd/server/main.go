@@ -193,6 +193,8 @@ func buildRouter(
 	convSvc := service.NewConversationService(convRepo, friendRepo, log)
 	msgSvc := service.NewMessageService(convRepo, msgRepo, seqAllocator, idGen, hub, cfg.Chat.RecallWindow, log)
 	hub.SetChatService(msgSvc)
+	groupRepo := repository.NewGormGroupRepository(db)
+	groupSvc := service.NewGroupService(groupRepo, seqAllocator, frPresence, idGen, hub, log)
 
 	router := api.NewRouterWithStage4(cfg, log, healthCtrl, api.Stage4Dependencies{
 		JWTAuth:           jwtAuth,
@@ -207,6 +209,7 @@ func buildRouter(
 		ConversationController: controller.NewConversationController(convSvc),
 		MessageController:      controller.NewMessageController(msgSvc),
 	})
+	api.RegisterGroupRoutes(router, jwtAuth, controller.NewGroupController(groupSvc))
 	api.RegisterWSRoute(router, cfg, hub)
 	return &serverRouter{Engine: router, hub: hub}, nil
 }

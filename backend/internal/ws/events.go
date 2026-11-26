@@ -160,3 +160,61 @@ func (hub *Hub) revokeSessions(ctx context.Context, userID uint64, sessionIDs []
 	}
 	return errors.Join(failures...)
 }
+
+// DeliverToUsers sends a server-to-client frame to all active local connections
+// belonging to targetUserIDs. When hub.store is configured, connection leases are
+// verified against Redis before enqueueing.
+func (hub *Hub) DeliverToUsers(ctx context.Context, targetUserIDs []uint64, frameType string, data any) error {
+	if hub == nil || len(targetUserIDs) == 0 || frameType == "" {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	seen := make(map[uint64]struct{}, len(targetUserIDs))
+	var clients []*Client
+	for _, uid := range targetUserIDs {
+		if uid == 0 {
+			continue
+		}
+		if _, dup := seen[uid]; dup {
+			continue
+		}
+		seen[uid] = struct{}{}
+		clients = append(clients, hub.peers.snapshot(uid)...)
+	}
+	if len(clients) == 0 {
+		return nil
+	}
+
+	msg := outgoing(frameType, "", data)
+	if hub.store == nil {
+		for _, client := range clients {
+			client.enqueue(msg)
+		}
+		return nil
+	}
+
+	timeout := hub.cfg.WriteTimeout
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	checkCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	leases := make([]repository.ConnLease, 0, len(clients))
+	for _, client := range clients {
+		leases = append(leases, client.lease)
+	}
+	live, err := hub.store.LiveConnections(checkCtx, leases)
+	if err != nil {
+		return err
+	}
+	for _, client := range clients {
+		if live[client.lease.ConnID] {
+			client.enqueue(msg)
+		}
+	}
+	return nil
+}

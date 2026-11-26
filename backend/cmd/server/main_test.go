@@ -332,6 +332,19 @@ func TestBuildRouterMountsHealthzAndAllStage4Routes(t *testing.T) {
 		"GET /api/v1/conversations/:conversation_id/sync",
 		"POST /api/v1/conversations/:conversation_id/messages",
 		"POST /api/v1/conversations/:conversation_id/messages/:msg_id/recall",
+		"POST /api/v1/groups",
+		"GET /api/v1/groups",
+		"GET /api/v1/groups/:group_id",
+		"PATCH /api/v1/groups/:group_id",
+		"DELETE /api/v1/groups/:group_id",
+		"GET /api/v1/groups/:group_id/members",
+		"POST /api/v1/groups/:group_id/members",
+		"DELETE /api/v1/groups/:group_id/members/:user_id",
+		"PATCH /api/v1/groups/:group_id/members/:user_id",
+		"PATCH /api/v1/groups/:group_id/members/:user_id/role",
+		"POST /api/v1/groups/:group_id/leave",
+		"POST /api/v1/groups/:group_id/transfer",
+		"GET /api/v1/groups/:group_id/audit",
 	}
 	for _, key := range expectedRoutes {
 		if !registered[key] {
@@ -375,6 +388,19 @@ func TestBuildRouterMountsHealthzAndAllStage4Routes(t *testing.T) {
 		{http.MethodGet, "/api/v1/conversations/1/sync"},
 		{http.MethodPost, "/api/v1/conversations/1/messages"},
 		{http.MethodPost, "/api/v1/conversations/1/messages/1/recall"},
+		{http.MethodPost, "/api/v1/groups"},
+		{http.MethodGet, "/api/v1/groups"},
+		{http.MethodGet, "/api/v1/groups/1"},
+		{http.MethodPatch, "/api/v1/groups/1"},
+		{http.MethodDelete, "/api/v1/groups/1"},
+		{http.MethodGet, "/api/v1/groups/1/members"},
+		{http.MethodPost, "/api/v1/groups/1/members"},
+		{http.MethodDelete, "/api/v1/groups/1/members/2"},
+		{http.MethodPatch, "/api/v1/groups/1/members/me"},
+		{http.MethodPatch, "/api/v1/groups/1/members/2/role"},
+		{http.MethodPost, "/api/v1/groups/1/leave"},
+		{http.MethodPost, "/api/v1/groups/1/transfer"},
+		{http.MethodGet, "/api/v1/groups/1/audit"},
 	}
 	for _, tc := range protectedSamples {
 		w := httptest.NewRecorder()
