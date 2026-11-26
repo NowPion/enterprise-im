@@ -147,6 +147,9 @@ export function useAuthorizedMediaSrc(
         return
       }
 
+      if (rawFallback && rawFallback.trim()) {
+        resolvedUrl.value = rawFallback.trim()
+      }
       loading.value = true
       error.value = null
       try {
