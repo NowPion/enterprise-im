@@ -211,4 +211,38 @@ func TestStage6BoundaryNonMemberAccessAndInvalidAttachments(t *testing.T) {
 	if n, err := countMessagesByClientID(t.Context(), rig.db, alice.ID, wsAfterDelID); err != nil || n != 0 {
 		t.Fatalf("rejected WS send after unfriend persisted %d rows (err=%v)", n, err)
 	}
+
+	// 5. Removed or left group members must immediately lose read/download access to group attachments (16004).
+	grpCreateSt, _, grpCreateEnv, _ := rig.doRequest(http.MethodPost, "/api/v1/groups", alice.AccessToken, map[string]any{
+		"name":       "Attachment Boundary Group",
+		"member_ids": []string{bob.IDStr, outsider.IDStr},
+	})
+	assertStage6OK(t, "create attachment boundary group", grpCreateSt, grpCreateEnv, http.StatusCreated)
+	grp, grpConvID := extractGroupCreateData(t, grpCreateEnv.Data)
+	rig.trackGroup(mustParseUint64(t, grp.ID))
+	rig.trackConv(mustParseUint64(t, grpConvID))
+
+	grpPDFBytes := makeStage6SamplePDF()
+	grpUpSt, grpUpEnv, grpAsset, _ := rig.uploadTempFile(alice.AccessToken, model.AssetPurposeFile, "group-secret.pdf", "application/pdf", grpPDFBytes)
+	assertStage6OK(t, "upload group boundary pdf", grpUpSt, grpUpEnv, http.StatusCreated)
+
+	grpMsgSt, _, grpMsgEnv, _ := rig.doRequest(http.MethodPost, "/api/v1/conversations/"+grpConvID+"/messages", alice.AccessToken, map[string]any{
+		"client_msg_id": uuid.NewString(),
+		"msg_type":      model.MessageTypeFile,
+		"content":       "[文件] group-secret.pdf",
+		"extra":         map[string]any{"asset_id": grpAsset.AssetID},
+	})
+	assertStage6OK(t, "send group attachment message", grpMsgSt, grpMsgEnv, http.StatusCreated)
+
+	rig.assertAssetAccessible(bob, grpAsset.AssetID, grpPDFBytes, "active group member bob")
+	rig.assertAssetAccessible(outsider, grpAsset.AssetID, grpPDFBytes, "active group member outsider")
+
+	remBobSt, _, remBobEnv, _ := rig.doRequest(http.MethodDelete, "/api/v1/groups/"+grp.ID+"/members/"+bob.IDStr, alice.AccessToken, nil)
+	assertStage6OK(t, "remove bob from boundary group", remBobSt, remBobEnv, http.StatusOK)
+	rig.assertAssetDenied(bob, grpAsset.AssetID, "removed group member bob")
+
+	leaveOutSt, _, leaveOutEnv, _ := rig.doRequest(http.MethodPost, "/api/v1/groups/"+grp.ID+"/leave", outsider.AccessToken, nil)
+	assertStage6OK(t, "outsider leave boundary group", leaveOutSt, leaveOutEnv, http.StatusOK)
+	rig.assertAssetDenied(outsider, grpAsset.AssetID, "left group member outsider")
+	rig.assertAssetAccessible(alice, grpAsset.AssetID, grpPDFBytes, "owner alice after member removal/leave")
 }
