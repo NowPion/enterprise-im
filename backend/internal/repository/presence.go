@@ -63,8 +63,15 @@ func (repo *PresenceRepository) change(ctx context.Context, op string, lease Con
 }
 
 func (repo *PresenceRepository) Open(ctx context.Context, lease ConnLease) error {
-	_, err := repo.change(ctx, "open", lease)
-	return err
+	millis, err := repo.change(ctx, "open", lease)
+	if err != nil {
+		return err
+	}
+	if millis > 0 && repo.db != nil {
+		// Best-effort immediate persistence; offlinePendingKey remains in Redis for ReapExpired retry on failure.
+		_ = repo.persistOffline(ctx, strconv.FormatUint(lease.UserID, 10), millis)
+	}
+	return nil
 }
 
 func (repo *PresenceRepository) Renew(ctx context.Context, lease ConnLease) error {
@@ -77,10 +84,16 @@ func (repo *PresenceRepository) Release(ctx context.Context, lease ConnLease) er
 	if err != nil || millis == 0 {
 		return err
 	}
+	if repo.db == nil {
+		return nil
+	}
 	return repo.persistOffline(ctx, strconv.FormatUint(lease.UserID, 10), millis)
 }
 
 func (repo *PresenceRepository) persistOffline(ctx context.Context, userID string, millis int64) error {
+	if repo.db == nil {
+		return errors.New("presence repository db is nil")
+	}
 	lastOnline := time.UnixMilli(millis).UTC()
 	err := repo.db.WithContext(ctx).Model(&model.User{}).
 		Where("id = ? AND (last_online_at IS NULL OR last_online_at < ?)", userID, lastOnline).
