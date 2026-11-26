@@ -26,6 +26,7 @@ import (
 	"enterprise-im/backend/internal/pkg/snowflake"
 	"enterprise-im/backend/internal/repository"
 	"enterprise-im/backend/internal/service"
+	"enterprise-im/backend/internal/ws"
 )
 
 // ShutdownHooks encapsulates ordered graceful shutdown steps across layers.
@@ -101,6 +102,12 @@ func run(configPath string) error {
 		_ = repository.CloseMySQL(db)
 		return fmt.Errorf("listen %s: %w", cfg.Server.Addr, err)
 	}
+	if err := router.hub.Start(context.Background()); err != nil {
+		_ = ln.Close()
+		_ = repository.CloseRedis(rdb)
+		_ = repository.CloseMySQL(db)
+		return fmt.Errorf("start websocket hub: %w", err)
+	}
 
 	srv := &http.Server{
 		Addr:         ln.Addr().String(),
@@ -111,12 +118,9 @@ func run(configPath string) error {
 	}
 
 	hooks := ShutdownHooks{
-		NotifyAndCloseWS: func(context.Context) error {
-			log.Info("shutdown_ws_hook_noop", slog.String("reason", "no active websocket hub in stage 4"))
-			return nil
-		},
+		NotifyAndCloseWS: router.hub.Shutdown,
 		DrainMQ: func(context.Context) error {
-			log.Info("shutdown_mq_hook_noop", slog.String("reason", "no active mq consumer in stage 4"))
+			log.Info("shutdown_mq_hook_noop", slog.String("reason", "no active mq consumers"))
 			return nil
 		},
 		CloseDB:    func() error { return repository.CloseMySQL(db) },
@@ -129,6 +133,11 @@ func run(configPath string) error {
 	return serveAndShutdown(sigCtx, log, srv, ln, cfg.Server.ShutdownTimeout, hooks)
 }
 
+type serverRouter struct {
+	*gin.Engine
+	hub *ws.Hub
+}
+
 func buildRouter(
 	cfg *config.Config,
 	authCfg *config.AuthConfig,
@@ -137,7 +146,7 @@ func buildRouter(
 	rdb *redis.Client,
 	idGen *snowflake.Generator,
 	jwtMgr *pkgjwt.Manager,
-) (*gin.Engine, error) {
+) (*serverRouter, error) {
 	if cfg == nil || authCfg == nil || db == nil || rdb == nil || idGen == nil || jwtMgr == nil {
 		return nil, errors.New("server router dependencies must not be nil")
 	}
@@ -162,21 +171,26 @@ func buildRouter(
 	seqAllocator := repository.NewRedisSeqAllocator(rdb, 5*time.Second)
 	frPresence := repository.NewRedisPresenceChecker(rdb)
 
-	jwtAuth := middleware.JWTAuth(jwtMgr, middleware.NewAuthStateStore(authRepo, sessionRepo))
-	revokeHook := newLoggedNoopSessionRevokeHook(log)
+	authState := middleware.NewAuthStateStore(authRepo, sessionRepo)
+	jwtAuth := middleware.JWTAuth(jwtMgr, authState)
+	leases := repository.NewPresenceRepository(db, rdb, cfg.WS.HeartbeatTimeout)
+	hub := ws.NewHub(cfg, middleware.NewAccessAuthenticator(jwtMgr, authState), leases, log)
 
-	authSvc := service.NewAuthServiceWithRepos(authRepo, sessionRepo, jwtMgr, authCfg, log, revokeHook)
+	authStore := hub.WatchAccessRotations(service.NewRepoAuthDataStore(authRepo, sessionRepo))
+	authSvc := service.NewAuthService(authStore, jwtMgr, authCfg, log, hub.RevokeSessions)
 	userSvc := service.NewUserService(userRepo, userPresenceRepo, log)
 	friendReqSvc := service.NewFriendRequestService(friendReqRepo, friendRepo, seqAllocator, frPresence, idGen, log)
 	friendSvc := service.NewFriendService(friendRepo, log)
 
-	return api.NewRouterWithStage4(cfg, log, healthCtrl, api.Stage4Dependencies{
+	router := api.NewRouterWithStage4(cfg, log, healthCtrl, api.Stage4Dependencies{
 		JWTAuth:           jwtAuth,
 		AuthController:    controller.NewAuthController(authSvc),
 		UserController:    controller.NewUserController(userSvc),
 		FriendRequestCtrl: controller.NewFriendRequestController(friendReqSvc),
 		FriendController:  controller.NewFriendController(friendSvc),
-	}), nil
+	})
+	api.RegisterWSRoute(router, cfg, hub)
+	return &serverRouter{Engine: router, hub: hub}, nil
 }
 
 func newLoggedNoopSessionRevokeHook(log *slog.Logger) service.SessionRevokeHook {
@@ -202,6 +216,9 @@ func serveAndShutdown(
 	shutdownTimeout time.Duration,
 	hooks ShutdownHooks,
 ) error {
+	if shutdownTimeout <= 0 {
+		shutdownTimeout = 15 * time.Second
+	}
 	serveErrCh := make(chan error, 1)
 	go func() {
 		log.Info("http_server_listening", slog.String("addr", ln.Addr().String()))
@@ -214,15 +231,13 @@ func serveAndShutdown(
 
 	select {
 	case err := <-serveErrCh:
-		_ = closeInfrastructure(log, hooks)
-		return err
+		ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+		defer cancel()
+		return errors.Join(err, executeOrderedShutdown(ctx, log, srv, hooks))
 	case <-sigCtx.Done():
 		log.Info("shutdown_signal_received")
 	}
 
-	if shutdownTimeout <= 0 {
-		shutdownTimeout = 15 * time.Second
-	}
 	timeoutCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 
