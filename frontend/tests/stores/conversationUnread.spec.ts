@@ -8,11 +8,8 @@ import { useMessageStore } from '@/stores/message'
 import {
   apiSuccess,
   authenticateFakeTransport,
-  bindStoreWS,
   createTestWSClient,
   extractConversationById,
-  extractConversationList,
-  findAction,
   installInMemoryRequestAdapter,
   makeConversation,
   makeMessage,
@@ -99,6 +96,8 @@ describe('useConversationStore unread counts, read_ack watermarks, and idempoten
   })
 
   afterEach(() => {
+    useMessageStore().reset()
+    useConversationStore().reset()
     restoreHttp?.()
     restoreHttp = undefined
   })
@@ -107,48 +106,29 @@ describe('useConversationStore unread counts, read_ack watermarks, and idempoten
     const convStore = useConversationStore()
     const msgStore = useMessageStore()
     const { client, sockets } = createTestWSClient()
-    const boundConv = bindStoreWS(convStore, client)
-    const boundMsg = bindStoreWS(msgStore, client)
-    if (boundConv || boundMsg) {
-      client.connect()
-      sockets[0].open()
-      authenticateFakeTransport(sockets[0])
-    }
-    const fetchConvs = findAction(convStore, ['fetchConversations', 'loadConversations', 'fetchList'])
-    expect(fetchConvs, 'useConversationStore must expose fetchConversations/loadConversations').not.toBeNull()
-    await Promise.resolve((fetchConvs as () => unknown)())
+    msgStore.bindWSClient(client, () => '10001')
+    client.connect()
+    sockets[0].open()
+    authenticateFakeTransport(sockets[0])
+    await convStore.fetchList()
     return { convStore, msgStore, client, socket: sockets[0] }
   }
 
   function pushIncomingMessage(
-    convStore: ReturnType<typeof useConversationStore>,
-    msgStore: ReturnType<typeof useMessageStore>,
-    socket: ReturnType<typeof createTestWSClient>['sockets'][number] | undefined,
+    socket: ReturnType<typeof createTestWSClient>['sockets'][number],
     msg: TestMessage,
   ) {
     const data = { push_type: 'message', message: msg, delivery_status: 'sent' }
-    if (socket) {
-      socket.receive({ type: 'msg.push', req_id: `push-${msg.msg_id}`, timestamp: Date.now(), data })
-    }
-    // If stores did not auto-wire via WSClient listeners, invoke direct handler if exposed
-    const msgHandler = findAction(msgStore, ['handleMsgPush', 'handleMessagePush', 'onMsgPush', 'onMessagePush'])
-    const convHandler = findAction(convStore, ['handleMsgPush', 'handleMessagePush', 'onMsgPush', 'onMessagePush', 'applyIncomingMessage'])
-    if (!socket) {
-      msgHandler?.(data as never)
-      convHandler?.(data as never)
-    }
+    socket.receive({ type: 'msg.push', req_id: `push-${msg.msg_id}`, timestamp: Date.now(), data })
   }
 
   it('increments unread_count by 1 when msg.push arrives for a non-active conversation from another user', async () => {
-    const { convStore, msgStore, client, socket } = await initStores()
+    const { convStore, client, socket } = await initStores()
 
-    const selectConv = findAction(convStore, ['setActiveConversation', 'selectConversation', 'openConversation', 'setCurrentConversation'])
-    expect(selectConv, 'useConversationStore must expose active conversation setter').not.toBeNull()
-    await Promise.resolve((selectConv as (id: string) => unknown)('90001'))
+    convStore.setActiveConversation('90001')
+    convStore.setChatVisible(true)
 
     pushIncomingMessage(
-      convStore,
-      msgStore,
       socket,
       makeMessage({
         msg_id: '188900000000011',
@@ -173,24 +153,25 @@ describe('useConversationStore unread counts, read_ack watermarks, and idempoten
     conversationsFixture[1].last_seq = '15'
     conversationsFixture[1].last_read_seq = '12'
 
-    const { convStore, client } = await initStores()
-    const selectConv = findAction(convStore, ['setActiveConversation', 'selectConversation', 'openConversation', 'setCurrentConversation'])
-    expect(selectConv).not.toBeNull()
-    await Promise.resolve((selectConv as (id: string) => unknown)('90002'))
+    const { convStore, msgStore, client, socket } = await initStores()
+    convStore.setActiveConversation('90002')
+    convStore.setChatVisible(true)
 
-    const markRead = findAction(convStore, ['markAsRead', 'markRead', 'markConversationRead', 'sendReadAck', 'applyReadWatermark'])
-    if (markRead) {
-      await Promise.resolve((markRead as (id: string, seq?: string) => unknown)('90002', '15'))
-    }
+    await msgStore.markRead('90002', '15')
+
+    const readAckFrames = socket.sent
+      .map(raw => JSON.parse(raw) as { type: string; data: { conversation_id?: string; last_read_seq?: string } })
+      .filter(frame => frame.type === 'msg.read_ack')
+    expect(readAckFrames).toHaveLength(1)
+    expect(readAckFrames[0].data).toEqual({ conversation_id: '90002', last_read_seq: '15' })
 
     const bg = extractConversationById(convStore, '90002')
     expect(bg?.unread_count).toBe(0)
     expect(bg?.last_read_seq).toBe('15')
 
     // Monotonic watermark guard: applying an older read_seq ('12') must not regress last_read_seq
-    if (markRead) {
-      await Promise.resolve((markRead as (id: string, seq?: string) => unknown)('90002', '12'))
-    }
+    await msgStore.markRead('90002', '12')
+    convStore.applyReadWatermark('90002', '12')
     const afterStale = extractConversationById(convStore, '90002')
     expect(afterStale?.last_read_seq).toBe('15')
     expect(afterStale?.unread_count).toBe(0)
@@ -199,9 +180,9 @@ describe('useConversationStore unread counts, read_ack watermarks, and idempoten
   })
 
   it('does NOT double-count unread_count when Stream/WS replays the same msg.push or delivers seq <= last_read_seq', async () => {
-    const { convStore, msgStore, client, socket } = await initStores()
-    const selectConv = findAction(convStore, ['setActiveConversation', 'selectConversation', 'openConversation', 'setCurrentConversation'])
-    await Promise.resolve((selectConv as (id: string) => unknown)('90001'))
+    const { convStore, client, socket } = await initStores()
+    convStore.setActiveConversation('90001')
+    convStore.setChatVisible(true)
 
     const replayedMsg = makeMessage({
       msg_id: '188900000000021',
@@ -212,17 +193,15 @@ describe('useConversationStore unread counts, read_ack watermarks, and idempoten
       content: 'replayed stream message',
     })
 
-    pushIncomingMessage(convStore, msgStore, socket, replayedMsg)
-    pushIncomingMessage(convStore, msgStore, socket, replayedMsg)
-    pushIncomingMessage(convStore, msgStore, socket, replayedMsg)
+    pushIncomingMessage(socket, replayedMsg)
+    pushIncomingMessage(socket, replayedMsg)
+    pushIncomingMessage(socket, replayedMsg)
 
     let conv = extractConversationById(convStore, '90003')
     expect(conv?.unread_count).toBe(1)
 
     // Message with seq <= last_read_seq ('20') must not increment unread
     pushIncomingMessage(
-      convStore,
-      msgStore,
       socket,
       makeMessage({
         msg_id: '188900000000019',
@@ -239,13 +218,11 @@ describe('useConversationStore unread counts, read_ack watermarks, and idempoten
   })
 
   it('supplies updated per-conversation last_seq map to WSClient getLastSeq hook on reconnect', async () => {
-    const { convStore, msgStore, client, socket } = await initStores()
-    const selectConv = findAction(convStore, ['setActiveConversation', 'selectConversation', 'openConversation', 'setCurrentConversation'])
-    await Promise.resolve((selectConv as (id: string) => unknown)('90001'))
+    const { convStore, client, socket } = await initStores()
+    convStore.setActiveConversation('90001')
+    convStore.setChatVisible(true)
 
     pushIncomingMessage(
-      convStore,
-      msgStore,
       socket,
       makeMessage({
         msg_id: '188900000000011',
@@ -257,13 +234,7 @@ describe('useConversationStore unread counts, read_ack watermarks, and idempoten
       }),
     )
 
-    const getLastSeq = () => {
-      const storeMap = findAction(convStore, ['getLastSeqMap', 'getLastSeq'])
-      if (storeMap) {
-        return (storeMap as () => Record<string, string>)()
-      }
-      return Object.fromEntries(extractConversationList(convStore).map(c => [c.id, String(c.last_seq)]))
-    }
+    const getLastSeq = () => ({ ...convStore.lastSeqMap })
 
     const reconnect = createTestWSClient({ getLastSeq })
     reconnect.client.connect()
