@@ -39,17 +39,20 @@ func wsHandler(cfg *config.Config, hub *ws.Hub) gin.HandlerFunc {
 		}
 		identity, failure := hub.Authenticate(c.Request.Context(), token)
 		reqID := errcode.GetRequestID(c)
+		if failure != nil {
+			hub.LogHandshakeDenied(c.Request.Context(), reqID, identity.UserID, failure)
+			if failure.HTTPStatus >= http.StatusInternalServerError {
+				errcode.Fail(c, errcode.ErrWSInternalError)
+			} else {
+				errcode.Fail(c, errcode.ErrWSAuthFailed.WithMessage(failure.Error()))
+			}
+			return
+		}
 		conn, err := upgrader.Upgrade(c.Writer, c.Request, http.Header{errcode.HeaderRequestID: []string{reqID}})
 		if err != nil {
 			return
 		}
-		if failure == nil {
-			errcode.SetUserID(c, strconv.FormatUint(identity.UserID, 10))
-		} else if failure.HTTPStatus >= http.StatusInternalServerError {
-			c.Set(errcode.ContextKeyBizCode, errcode.ErrWSInternalError.Code)
-		} else {
-			c.Set(errcode.ContextKeyBizCode, errcode.ErrWSAuthFailed.Code)
-		}
-		hub.Serve(c.Request.Context(), conn, identity, reqID, failure)
+		errcode.SetUserID(c, strconv.FormatUint(identity.UserID, 10))
+		hub.Serve(c.Request.Context(), conn, identity, reqID, nil)
 	}
 }
