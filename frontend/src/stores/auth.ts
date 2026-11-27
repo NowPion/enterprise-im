@@ -12,7 +12,7 @@ import {
   setAuthLifecycleCallbacks,
 } from '@/composables/useAuthRefresh'
 import type { ChangePasswordPayload, LogoutScope, RegisterPayload, Tokens } from '@/types/auth'
-import { BIZ_CODE } from '@/types/common'
+import { BIZ_CODE, isApiError } from '@/types/common'
 import type { SelfUser, UpdateMePayload } from '@/types/user'
 import {
   createSharedWSClient,
@@ -218,8 +218,18 @@ export const useAuthStore = defineStore('auth', () => {
         initialized.value = true
         connectWS()
         return true
-      } catch {
-        clearLocalSession()
+      } catch (err) {
+        if (
+          isApiError(err) &&
+          (err.httpStatus === 401 ||
+            err.httpStatus === 403 ||
+            (err.code >= BIZ_CODE.ACCESS_TOKEN_INVALID && err.code <= BIZ_CODE.SESSION_REVOKED))
+        ) {
+          clearLocalSession()
+        } else {
+          disconnectWS()
+          user.value = null
+        }
         initialized.value = true
         return false
       } finally {
