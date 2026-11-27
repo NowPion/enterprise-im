@@ -121,7 +121,7 @@ watch(
 
 onMounted(async () => {
   ensureRealtimeConnected()
-  if (currentUserId.value && conversationStore.conversations.length === 0) {
+  if (currentUserId.value) {
     try {
       await conversationStore.fetchList()
     } catch (err) {
