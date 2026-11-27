@@ -433,11 +433,31 @@ textarea {
   white-space: nowrap;
 }
 
+.admin-page .panel-card .panel-desc,
+.overview-page .header-bar .page-sub {
+  word-break: keep-all;
+  line-break: strict;
+  overflow-wrap: break-word;
+}
+
+.admin-nowrap {
+  white-space: nowrap;
+}
+
 .admin-cards-mobile {
   display: none;
 }
 
 @media (max-width: 768px) {
+  .admin-page .panel-card .panel-header {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .admin-page .panel-card .panel-header > .el-button {
+    align-self: flex-start;
+  }
+
   .admin-table-desktop {
     display: none !important;
   }

@@ -78,7 +78,7 @@ onMounted(() => {
         <div>
           <h2 class="panel-title ios-large-title">消息审计查询</h2>
           <p class="panel-desc">
-            按会话 ID、发送者 ID、内容关键词与 UTC 时间范围组合检索不可变消息审计记录。
+            按会话 ID、发送者 ID、内容关键词与 UTC 时间范围组合检索不可变消息<span class="admin-nowrap">审计记录</span>。
           </p>
         </div>
         <el-button type="primary" plain :icon="Refresh" :loading="adminStore.auditLoading" @click="handleSearch">

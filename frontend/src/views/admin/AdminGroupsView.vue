@@ -100,7 +100,9 @@ onMounted(() => {
       <div class="panel-header">
         <div>
           <h2 class="panel-title ios-large-title">群组监管</h2>
-          <p class="panel-desc">检索全平台群聊、核查群成员与会话序号、执行合规强制解散。</p>
+          <p class="panel-desc">
+            检索全平台群聊、核查群成员与<span class="admin-nowrap">会话序号</span>、执行合规强制解散。
+          </p>
         </div>
         <el-button type="primary" plain :icon="Refresh" :loading="adminStore.groupsLoading" @click="handleSearch">
           刷新
