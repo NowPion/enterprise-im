@@ -209,6 +209,8 @@ function closeDialog() {
             />
             <el-button
               size="small"
+              type="primary"
+              plain
               :loading="uploadingAvatar"
               :icon="Upload"
               @click="triggerAvatarPicker"
@@ -268,7 +270,7 @@ function closeDialog() {
           <el-button :loading="searchingUsers" @click="handleSearchUsers">搜索</el-button>
         </div>
 
-        <div v-loading="loadingCandidates || searchingUsers" class="candidate-list">
+        <div v-loading="loadingCandidates || searchingUsers" class="candidate-list ios-grouped-section">
           <div
             v-for="user in displayCandidates"
             :key="user.id"
@@ -336,9 +338,8 @@ function closeDialog() {
 .avatar-preview {
   width: 72px;
   height: 72px;
-  border-radius: 8px;
-  border: 1px solid #e5e7eb;
-  background-color: #f5f6f8;
+  border-radius: 16px;
+  background-color: var(--im-bg-grouped);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -352,7 +353,7 @@ function closeDialog() {
 }
 
 .avatar-placeholder-icon {
-  color: #6b7280;
+  color: var(--im-accent-primary);
 }
 
 .avatar-actions {
@@ -374,12 +375,12 @@ function closeDialog() {
 .field-label {
   font-size: 13px;
   font-weight: 500;
-  color: #111827;
+  color: var(--im-text-secondary);
   margin-bottom: 6px;
 }
 
 .required-mark {
-  color: #dc2626;
+  color: var(--im-status-danger);
 }
 
 .mt-12 {
@@ -387,7 +388,7 @@ function closeDialog() {
 }
 
 .member-picker {
-  border-top: 1px solid #eceef2;
+  border-top: 0.5px solid var(--im-border-light);
   padding-top: 14px;
   display: flex;
   flex-direction: column;
@@ -402,7 +403,8 @@ function closeDialog() {
 
 .selected-counter {
   font-size: 12px;
-  color: #4b5563;
+  font-weight: 600;
+  color: var(--im-accent-primary);
 }
 
 .selected-tags {
@@ -415,11 +417,12 @@ function closeDialog() {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 3px 8px;
+  padding: 4px 10px;
   font-size: 12px;
-  color: #111827;
-  background-color: #eceef2;
-  border-radius: 4px;
+  font-weight: 500;
+  color: var(--im-accent-primary);
+  background-color: var(--im-accent-primary-soft);
+  border-radius: 9999px;
 }
 
 .chip-remove {
@@ -427,7 +430,7 @@ function closeDialog() {
   background: transparent;
   padding: 0;
   cursor: pointer;
-  color: #4b5563;
+  color: var(--im-accent-primary);
   display: inline-flex;
   align-items: center;
 }
@@ -440,30 +443,36 @@ function closeDialog() {
 .candidate-list {
   max-height: 220px;
   overflow-y: auto;
-  border: 1px solid #e5e7eb;
-  border-radius: 6px;
-  background-color: #ffffff;
+  background-color: var(--im-bg-grouped);
 }
 
 .candidate-row {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 12px;
-  border-bottom: 1px solid #f5f6f8;
+  padding: 10px 14px;
+  background-color: var(--im-bg-surface);
   cursor: pointer;
+  transition: background-color 0.12s ease;
 }
 
-.candidate-row:last-child {
-  border-bottom: none;
+.candidate-row + .candidate-row::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 32px;
+  right: 0;
+  height: 0.5px;
+  background-color: var(--im-border-light);
 }
 
 .candidate-row:hover {
-  background-color: #f5f6f8;
+  background-color: var(--im-bg-hover);
 }
 
 .candidate-row.is-selected {
-  background-color: #eceef2;
+  background-color: var(--im-bg-active);
 }
 
 .candidate-info {
@@ -481,11 +490,11 @@ function closeDialog() {
 }
 
 .status-dot.online {
-  background-color: #16a34a;
+  background-color: var(--im-status-online);
 }
 
 .status-dot.offline {
-  background-color: #9ca3af;
+  background-color: var(--im-status-offline);
 }
 
 .candidate-text {
@@ -493,29 +502,29 @@ function closeDialog() {
 }
 
 .candidate-name {
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 500;
-  color: #111827;
+  color: var(--im-text-primary);
 }
 
 .candidate-sub {
   font-size: 12px;
-  color: #6b7280;
+  color: var(--im-text-secondary);
 }
 
 .check-icon {
-  color: #111827;
+  color: var(--im-accent-primary);
 }
 
 .add-icon {
-  color: #6b7280;
+  color: var(--im-text-tertiary);
 }
 
 .empty-hint {
   padding: 20px;
   text-align: center;
   font-size: 13px;
-  color: #6b7280;
+  color: var(--im-text-secondary);
 }
 
 .dialog-footer {

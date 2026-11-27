@@ -165,78 +165,83 @@ onMounted(() => {
         description="您可以通过右上角「添加好友」搜索企业成员并发起好友申请。"
       />
 
-      <div v-for="item in currentItems" :key="item.id" class="request-card">
-        <div class="request-card__left">
-          <AppAvatar
-            :src="item.peer?.avatar_url"
-            :name="item.peer?.nickname || item.peer?.username || '用户'"
-            :size="44"
-            :show-online="true"
-            :online="item.peer?.online ?? false"
-          />
-          <div class="request-card__info">
-            <div class="request-card__name-row">
-              <span class="request-card__name">
-                {{ item.peer?.nickname || `用户 ${activeDirection === 'received' ? item.from_user_id : item.to_user_id}` }}
-              </span>
-              <span v-if="item.peer?.username" class="request-card__username">
-                @{{ item.peer.username }}
-              </span>
-              <el-tag size="small" :type="statusTagType(item.status)" effect="plain">
-                {{ statusLabel(item.status) }}
-              </el-tag>
+      <div v-else class="ios-grouped-section requests-group">
+        <div v-for="item in currentItems" :key="item.id" class="request-card">
+          <div class="request-card__left">
+            <AppAvatar
+              :src="item.peer?.avatar_url"
+              :name="item.peer?.nickname || item.peer?.username || '用户'"
+              :size="46"
+              :show-online="true"
+              :online="item.peer?.online ?? false"
+              rounded="full"
+            />
+            <div class="request-card__info">
+              <div class="request-card__name-row">
+                <span class="request-card__name">
+                  {{ item.peer?.nickname || `用户 ${activeDirection === 'received' ? item.from_user_id : item.to_user_id}` }}
+                </span>
+                <span v-if="item.peer?.username" class="request-card__username">
+                  @{{ item.peer.username }}
+                </span>
+                <el-tag size="small" :type="statusTagType(item.status)" effect="plain">
+                  {{ statusLabel(item.status) }}
+                </el-tag>
+              </div>
+              <p class="request-card__msg">
+                {{ item.message ? `验证消息：${item.message}` : '无附加验证消息' }}
+              </p>
+              <p class="request-card__time">
+                发起于 {{ formatTime(item.created_at) }}
+                <template v-if="item.handled_at">
+                  · 处理于 {{ formatTime(item.handled_at) }}
+                </template>
+              </p>
             </div>
-            <p class="request-card__msg">
-              {{ item.message ? `验证消息：${item.message}` : '无附加验证消息' }}
-            </p>
-            <p class="request-card__time">
-              发起于 {{ formatTime(item.created_at) }}
-              <template v-if="item.handled_at">
-                · 处理于 {{ formatTime(item.handled_at) }}
-              </template>
-            </p>
           </div>
-        </div>
 
-        <div class="request-card__actions">
-          <template v-if="activeDirection === 'received' && item.status === 'pending'">
-            <el-button
-              type="primary"
-              size="small"
-              :icon="Check"
-              :loading="busyId === item.id"
-              @click="handleAccept(item.id)"
-            >
-              同意
-            </el-button>
-            <el-button
-              size="small"
-              :icon="Close"
-              :loading="busyId === item.id"
-              @click="handleReject(item.id)"
-            >
-              拒绝
-            </el-button>
-          </template>
+          <div class="request-card__actions">
+            <template v-if="activeDirection === 'received' && item.status === 'pending'">
+              <el-button
+                type="primary"
+                size="small"
+                :icon="Check"
+                :loading="busyId === item.id"
+                @click="handleAccept(item.id)"
+              >
+                同意
+              </el-button>
+              <el-button
+                size="small"
+                :icon="Close"
+                :loading="busyId === item.id"
+                @click="handleReject(item.id)"
+              >
+                拒绝
+              </el-button>
+            </template>
 
-          <template v-else-if="activeDirection === 'sent' && item.status === 'pending'">
-            <el-button
-              size="small"
-              :loading="busyId === item.id"
-              @click="handleCancel(item.id)"
-            >
-              撤销申请
-            </el-button>
-          </template>
+            <template v-else-if="activeDirection === 'sent' && item.status === 'pending'">
+              <el-button
+                size="small"
+                :loading="busyId === item.id"
+                @click="handleCancel(item.id)"
+              >
+                撤销申请
+              </el-button>
+            </template>
 
-          <template v-else-if="item.status === 'accepted'">
-            <el-button
-              size="small"
-              @click="openConversation(activeDirection === 'received' ? item.from_user_id : item.to_user_id)"
-            >
-              发消息
-            </el-button>
-          </template>
+            <template v-else-if="item.status === 'accepted'">
+              <el-button
+                type="primary"
+                plain
+                size="small"
+                @click="openConversation(activeDirection === 'received' ? item.from_user_id : item.to_user_id)"
+              >
+                发消息
+              </el-button>
+            </template>
+          </div>
         </div>
       </div>
 
@@ -258,8 +263,9 @@ onMounted(() => {
 }
 
 .requests-pane__toolbar {
-  padding: 16px 24px;
-  border-bottom: 1px solid var(--im-border-light);
+  padding: 14px 24px;
+  border-bottom: 0.5px solid var(--im-border-light);
+  background-color: var(--im-bg-toolbar);
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -276,21 +282,35 @@ onMounted(() => {
 .requests-pane__list {
   flex: 1;
   overflow-y: auto;
-  padding: 16px 24px;
+  padding: 18px 24px;
   display: flex;
   flex-direction: column;
   gap: 12px;
 }
 
+.requests-group {
+  display: flex;
+  flex-direction: column;
+}
+
 .request-card {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  padding: 16px;
-  border: 1px solid var(--im-border-base);
-  border-radius: var(--im-radius-md);
+  padding: 15px 18px;
   background-color: var(--im-bg-surface);
+}
+
+.request-card + .request-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 76px;
+  right: 0;
+  height: 0.5px;
+  background-color: var(--im-border-light);
 }
 
 .request-card__left {
@@ -312,18 +332,19 @@ onMounted(() => {
 }
 
 .request-card__name {
+  font-size: 16px;
   font-weight: 600;
   color: var(--im-text-primary);
 }
 
 .request-card__username {
-  font-size: 12px;
-  color: var(--im-text-muted);
+  font-size: 13px;
+  color: var(--im-text-secondary);
 }
 
 .request-card__msg {
-  margin: 6px 0 4px;
-  font-size: 13px;
+  margin: 5px 0 3px;
+  font-size: 14px;
   color: var(--im-text-secondary);
   word-break: break-word;
 }

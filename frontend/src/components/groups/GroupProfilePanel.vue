@@ -201,7 +201,7 @@ async function handleDisbandGroup() {
 
 <template>
   <div class="profile-panel">
-    <section class="section-card">
+    <section class="ios-grouped-section section-card">
       <div class="section-header">
         <div>
           <h3 class="section-title">群基础信息</h3>
@@ -258,6 +258,8 @@ async function handleDisbandGroup() {
             />
             <el-button
               size="small"
+              type="primary"
+              plain
               :icon="Upload"
               :loading="uploadingAvatar"
               @click="triggerAvatarUpload"
@@ -305,7 +307,7 @@ async function handleDisbandGroup() {
       </div>
     </section>
 
-    <section class="section-card">
+    <section class="ios-grouped-section section-card">
       <h3 class="section-title">我在本群的设置</h3>
       <div class="nickname-row">
         <el-input
@@ -315,6 +317,8 @@ async function handleDisbandGroup() {
           placeholder="设置我在本群的群昵称（留空恢复默认昵称）"
         />
         <el-button
+          type="primary"
+          plain
           :disabled="!canEditMyNickname"
           :loading="groupStore.submitting"
           @click="handleSaveMyNickname"
@@ -324,7 +328,7 @@ async function handleDisbandGroup() {
       </div>
     </section>
 
-    <section class="section-card danger-card">
+    <section class="ios-grouped-section section-card danger-card">
       <h3 class="section-title">高危与归属操作</h3>
       <p class="section-desc">
         群主须先转让群主后才可退群，或直接解散群聊；普通成员与管理员可主动退出。
@@ -394,10 +398,7 @@ async function handleDisbandGroup() {
 }
 
 .section-card {
-  background-color: #ffffff;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  padding: 18px 20px;
+  padding: 20px;
 }
 
 .section-header {
@@ -410,15 +411,15 @@ async function handleDisbandGroup() {
 
 .section-title {
   margin: 0;
-  font-size: 15px;
+  font-size: 16px;
   font-weight: 600;
-  color: #111827;
+  color: var(--im-text-primary);
 }
 
 .section-desc {
   margin: 4px 0 0;
-  font-size: 12px;
-  color: #6b7280;
+  font-size: 13px;
+  color: var(--im-text-secondary);
 }
 
 .avatar-row {
@@ -426,16 +427,15 @@ async function handleDisbandGroup() {
   gap: 16px;
   align-items: flex-start;
   padding-bottom: 16px;
-  border-bottom: 1px solid #eceef2;
+  border-bottom: 0.5px solid var(--im-border-light);
   margin-bottom: 16px;
 }
 
 .group-avatar-box {
   width: 72px;
   height: 72px;
-  border-radius: 8px;
-  border: 1px solid #e5e7eb;
-  background-color: #f5f6f8;
+  border-radius: 16px;
+  background-color: var(--im-bg-grouped);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -450,7 +450,7 @@ async function handleDisbandGroup() {
 }
 
 .avatar-icon {
-  color: #6b7280;
+  color: var(--im-accent-primary);
 }
 
 .avatar-controls {
@@ -474,12 +474,12 @@ async function handleDisbandGroup() {
 
 .meta-label {
   font-size: 12px;
-  color: #6b7280;
+  color: var(--im-text-secondary);
 }
 
 .meta-value {
-  font-size: 13px;
-  color: #111827;
+  font-size: 14px;
+  color: var(--im-text-primary);
   font-weight: 500;
 }
 
@@ -488,11 +488,11 @@ async function handleDisbandGroup() {
 }
 
 .text-ok {
-  color: #16a34a;
+  color: #248a3d;
 }
 
 .text-danger {
-  color: #dc2626;
+  color: var(--im-status-danger);
 }
 
 .avatar-btns {
@@ -519,7 +519,7 @@ async function handleDisbandGroup() {
 .field-label {
   font-size: 13px;
   font-weight: 500;
-  color: #111827;
+  color: var(--im-text-secondary);
 }
 
 .form-actions {
@@ -531,10 +531,6 @@ async function handleDisbandGroup() {
   margin-top: 12px;
   display: flex;
   gap: 10px;
-}
-
-.danger-card {
-  border-color: #e5e7eb;
 }
 
 .danger-actions {

@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { ArrowLeft, ChatDotRound, Plus, Refresh, UserFilled } from '@element-plus/icons-vue'
+import { ArrowLeft, ArrowRight, ChatDotRound, Plus, Refresh, UserFilled } from '@element-plus/icons-vue'
 import { extractErrorMessage } from '@/api/group'
 import AuthorizedAvatar from '@/components/chat/AuthorizedAvatar.vue'
 import GroupAuditPanel from '@/components/groups/GroupAuditPanel.vue'
@@ -128,7 +128,7 @@ onUnmounted(() => {
   <div class="groups-page">
     <aside class="group-sidebar" :class="{ 'mobile-hidden': Boolean(routeGroupId) }">
       <div class="sidebar-header">
-        <h2 class="sidebar-title">群聊管理</h2>
+        <h2 class="sidebar-title ios-large-title">群聊管理</h2>
         <div class="sidebar-header-actions">
           <el-button
             size="small"
@@ -138,7 +138,7 @@ onUnmounted(() => {
             :loading="groupStore.groupsLoading"
             @click="loadGroupList()"
           />
-          <el-button type="primary" size="small" :icon="Plus" @click="createVisible = true">
+          <el-button type="primary" plain size="small" :icon="Plus" @click="createVisible = true">
             新建群聊
           </el-button>
         </div>
@@ -157,27 +157,30 @@ onUnmounted(() => {
       </div>
 
       <div v-loading="groupStore.groupsLoading" class="group-list">
-        <div
-          v-for="item in groupStore.groups"
-          :key="item.id"
-          class="group-list-item"
-          :class="{ 'is-active': item.id === routeGroupId }"
-          @click="openGroup(item.id)"
-        >
-          <AuthorizedAvatar :src="item.avatar_url" :name="item.name" :size="40" />
-          <div class="item-content">
-            <div class="item-top">
-              <span class="item-name">{{ item.name }}</span>
-              <span class="item-role">{{ roleLabel(item.role) }}</span>
+        <div v-if="groupStore.groups.length > 0" class="ios-grouped-section">
+          <div
+            v-for="item in groupStore.groups"
+            :key="item.id"
+            class="group-list-item"
+            :class="{ 'is-active': item.id === routeGroupId }"
+            @click="openGroup(item.id)"
+          >
+            <AuthorizedAvatar :src="item.avatar_url" :name="item.name" :size="42" shape="circle" />
+            <div class="item-content">
+              <div class="item-top">
+                <span class="item-name">{{ item.name }}</span>
+                <span class="item-role">{{ roleLabel(item.role) }}</span>
+              </div>
+              <div class="item-bottom">
+                <span>{{ item.member_count }} 人</span>
+                <span v-if="item.status === 'disbanded'" class="disbanded-tag">已解散</span>
+              </div>
             </div>
-            <div class="item-bottom">
-              <span>{{ item.member_count }} 人</span>
-              <span v-if="item.status === 'disbanded'" class="disbanded-tag">已解散</span>
-            </div>
+            <el-icon class="item-chevron" :size="14"><ArrowRight /></el-icon>
           </div>
         </div>
 
-        <div v-if="!groupStore.groupsLoading && groupStore.groups.length === 0" class="empty-list">
+        <div v-else-if="!groupStore.groupsLoading" class="ios-grouped-section empty-list">
           暂无加入的群聊，可点击右上角“新建群聊”
         </div>
 
@@ -185,6 +188,7 @@ onUnmounted(() => {
           <el-button
             size="small"
             link
+            type="primary"
             :loading="groupStore.groupsLoading"
             @click="groupStore.fetchGroups({ reset: false })"
           >
@@ -195,7 +199,7 @@ onUnmounted(() => {
     </aside>
 
     <main class="group-workspace" :class="{ 'mobile-hidden': !routeGroupId }">
-      <div v-if="quickChatBanner" class="quick-chat-banner">
+      <div v-if="quickChatBanner" class="quick-chat-banner ios-grouped-section">
         <span>{{ quickChatBanner.title }}</span>
         <div class="banner-actions">
           <el-button
@@ -211,21 +215,25 @@ onUnmounted(() => {
       </div>
 
       <div v-if="!routeGroupId" class="workspace-placeholder">
-        <el-icon :size="40" class="placeholder-icon"><UserFilled /></el-icon>
+        <div class="placeholder-icon-wrap">
+          <el-icon :size="36" class="placeholder-icon"><UserFilled /></el-icon>
+        </div>
         <p class="placeholder-title">选择左侧群聊查看或管理成员与群设置</p>
         <el-button type="primary" :icon="Plus" @click="createVisible = true">创建新群聊</el-button>
       </div>
 
       <div v-else v-loading="groupStore.detailLoading" class="workspace-detail">
         <template v-if="groupStore.activeGroupDetail">
-          <header class="detail-header">
+          <header class="detail-header ios-grouped-section">
             <div class="detail-title-group">
-              <el-button
-                class="mobile-back-btn"
-                size="small"
-                :icon="ArrowLeft"
+              <button
+                type="button"
+                class="mobile-back-btn ios-chevron-back"
                 @click="backToList"
-              />
+              >
+                <el-icon :size="18"><ArrowLeft /></el-icon>
+                <span>群聊</span>
+              </button>
               <div>
                 <div class="detail-name-row">
                   <h1 class="detail-title">{{ groupStore.activeGroupDetail.group.name }}</h1>
@@ -253,6 +261,8 @@ onUnmounted(() => {
             <div class="detail-header-actions">
               <el-button
                 v-if="canInviteMembers"
+                type="primary"
+                plain
                 :icon="Plus"
                 @click="inviteVisible = true"
               >
@@ -318,35 +328,34 @@ onUnmounted(() => {
 <style scoped>
 .groups-page {
   display: flex;
+  width: 100%;
   height: 100%;
   min-height: 0;
-  background-color: #f5f6f8;
-  color: #111827;
+  background-color: var(--im-bg-grouped);
+  color: var(--im-text-primary);
 }
 
 .group-sidebar {
-  width: 300px;
+  width: var(--im-list-width);
   flex-shrink: 0;
-  background-color: #ffffff;
-  border-right: 1px solid #e5e7eb;
+  background-color: var(--im-bg-grouped);
+  border-right: 0.5px solid var(--im-separator);
   display: flex;
   flex-direction: column;
 }
 
 .sidebar-header {
-  padding: 16px;
-  border-bottom: 1px solid #eceef2;
+  padding: 16px 14px 10px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+  background-color: var(--im-bg-sidebar);
+  backdrop-filter: blur(18px);
 }
 
 .sidebar-title {
-  margin: 0;
-  font-size: 16px;
-  font-weight: 600;
-  color: #111827;
+  font-size: 26px;
 }
 
 .sidebar-header-actions {
@@ -356,32 +365,43 @@ onUnmounted(() => {
 }
 
 .status-filter {
-  padding: 10px 16px;
-  border-bottom: 1px solid #eceef2;
+  padding: 0 14px 12px;
+  background-color: var(--im-bg-sidebar);
 }
 
 .group-list {
   flex: 1;
   overflow-y: auto;
-  padding: 8px;
+  padding: 2px 12px 16px;
 }
 
 .group-list-item {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 10px;
-  border-radius: 6px;
+  padding: 11px 12px;
   cursor: pointer;
-  margin-bottom: 4px;
+  background-color: var(--im-bg-surface);
+  transition: background-color 0.14s var(--im-ease-ios);
+}
+
+.group-list-item + .group-list-item::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 64px;
+  right: 0;
+  height: 0.5px;
+  background-color: var(--im-border-light);
 }
 
 .group-list-item:hover {
-  background-color: #f5f6f8;
+  background-color: var(--im-bg-hover);
 }
 
 .group-list-item.is-active {
-  background-color: #eceef2;
+  background-color: var(--im-bg-active);
 }
 
 .item-content {
@@ -397,9 +417,9 @@ onUnmounted(() => {
 }
 
 .item-name {
-  font-size: 13px;
-  font-weight: 500;
-  color: #111827;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--im-text-primary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -407,37 +427,44 @@ onUnmounted(() => {
 
 .item-role {
   font-size: 11px;
-  color: #4b5563;
-  background-color: #f5f6f8;
-  padding: 1px 6px;
-  border-radius: 3px;
+  font-weight: 600;
+  color: var(--im-accent-primary);
+  background-color: var(--im-accent-primary-soft);
+  padding: 2px 7px;
+  border-radius: 9999px;
   flex-shrink: 0;
 }
 
 .item-bottom {
-  margin-top: 4px;
+  margin-top: 3px;
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 12px;
-  color: #6b7280;
+  font-size: 13px;
+  color: var(--im-text-secondary);
+}
+
+.item-chevron {
+  color: var(--im-text-tertiary);
+  flex-shrink: 0;
 }
 
 .disbanded-tag {
-  color: #dc2626;
+  color: var(--im-status-danger);
+  font-weight: 500;
 }
 
 .empty-list {
   padding: 32px 16px;
   text-align: center;
-  font-size: 13px;
-  color: #6b7280;
+  font-size: 14px;
+  color: var(--im-text-secondary);
 }
 
 .load-more-wrap {
   display: flex;
   justify-content: center;
-  padding: 8px 0;
+  padding: 10px 0;
 }
 
 .group-workspace {
@@ -454,13 +481,11 @@ onUnmounted(() => {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 10px 14px;
+  padding: 12px 16px;
   margin-bottom: 14px;
-  background-color: #ffffff;
-  border: 1px solid #d1d5db;
-  border-radius: 6px;
-  font-size: 13px;
-  color: #111827;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--im-text-primary);
 }
 
 .banner-actions {
@@ -476,16 +501,28 @@ onUnmounted(() => {
   align-items: center;
   justify-content: center;
   gap: 12px;
-  color: #6b7280;
+  color: var(--im-text-secondary);
+}
+
+.placeholder-icon-wrap {
+  width: 68px;
+  height: 68px;
+  border-radius: 18px;
+  background-color: var(--im-bg-fill);
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .placeholder-icon {
-  color: #9ca3af;
+  color: var(--im-accent-primary);
 }
 
 .placeholder-title {
   margin: 0;
-  font-size: 14px;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--im-text-primary);
 }
 
 .workspace-detail {
@@ -495,10 +532,7 @@ onUnmounted(() => {
 }
 
 .detail-header {
-  background-color: #ffffff;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  padding: 16px 20px;
+  padding: 18px 20px;
   display: flex;
   flex-wrap: wrap;
   justify-content: space-between;
@@ -524,34 +558,32 @@ onUnmounted(() => {
 
 .detail-title {
   margin: 0;
-  font-size: 18px;
-  font-weight: 600;
-  color: #111827;
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--im-text-primary);
 }
 
 .status-pill {
   font-size: 11px;
-  padding: 2px 8px;
-  border-radius: 4px;
-  font-weight: 500;
+  padding: 2px 9px;
+  border-radius: 9999px;
+  font-weight: 600;
 }
 
 .pill-active {
-  background-color: #f0fdf4;
-  color: #16a34a;
-  border: 1px solid #bbf7d0;
+  background-color: rgba(52, 199, 89, 0.14);
+  color: #248a3d;
 }
 
 .pill-disbanded {
-  background-color: #fef2f2;
-  color: #dc2626;
-  border: 1px solid #fecaca;
+  background-color: rgba(255, 59, 48, 0.12);
+  color: var(--im-status-danger);
 }
 
 .detail-sub {
   margin-top: 4px;
-  font-size: 12px;
-  color: #6b7280;
+  font-size: 13px;
+  color: var(--im-text-secondary);
 }
 
 .detail-header-actions {
@@ -562,6 +594,7 @@ onUnmounted(() => {
 @media (max-width: 768px) {
   .group-sidebar {
     width: 100%;
+    border-right: none;
   }
 
   .mobile-hidden {

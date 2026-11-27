@@ -130,10 +130,10 @@ async function handleSubmit() {
 
       <div class="summary-bar">
         <span>点击用户加入本次邀请列表</span>
-        <span>已选择 {{ selectedIds.size }} 人</span>
+        <span class="summary-count">已选择 {{ selectedIds.size }} 人</span>
       </div>
 
-      <div v-loading="loadingCandidates || searchingUsers" class="candidate-list">
+      <div v-loading="loadingCandidates || searchingUsers" class="candidate-list ios-grouped-section">
         <div
           v-for="user in displayCandidates"
           :key="user.id"
@@ -196,39 +196,51 @@ async function handleSubmit() {
   display: flex;
   justify-content: space-between;
   font-size: 12px;
-  color: #4b5563;
+  color: var(--im-text-secondary);
+}
+
+.summary-count {
+  font-weight: 600;
+  color: var(--im-accent-primary);
 }
 
 .candidate-list {
   max-height: 280px;
   overflow-y: auto;
-  border: 1px solid #e5e7eb;
-  border-radius: 6px;
+  background-color: var(--im-bg-grouped);
 }
 
 .candidate-item {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 9px 12px;
-  border-bottom: 1px solid #f5f6f8;
+  padding: 10px 14px;
+  background-color: var(--im-bg-surface);
   cursor: pointer;
+  transition: background-color 0.12s ease;
 }
 
-.candidate-item:last-child {
-  border-bottom: none;
+.candidate-item + .candidate-item::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 32px;
+  right: 0;
+  height: 0.5px;
+  background-color: var(--im-border-light);
 }
 
 .candidate-item:hover:not(.is-existing) {
-  background-color: #f5f6f8;
+  background-color: var(--im-bg-hover);
 }
 
 .candidate-item.is-selected {
-  background-color: #eceef2;
+  background-color: var(--im-bg-active);
 }
 
 .candidate-item.is-existing {
-  opacity: 0.6;
+  opacity: 0.55;
   cursor: not-allowed;
 }
 
@@ -245,41 +257,41 @@ async function handleSubmit() {
 }
 
 .status-dot.online {
-  background-color: #16a34a;
+  background-color: var(--im-status-online);
 }
 
 .status-dot.offline {
-  background-color: #9ca3af;
+  background-color: var(--im-status-offline);
 }
 
 .candidate-name {
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 500;
-  color: #111827;
+  color: var(--im-text-primary);
 }
 
 .candidate-meta {
   font-size: 12px;
-  color: #6b7280;
+  color: var(--im-text-secondary);
 }
 
 .member-badge {
   font-size: 12px;
-  color: #6b7280;
+  color: var(--im-text-secondary);
 }
 
 .icon-active {
-  color: #111827;
+  color: var(--im-accent-primary);
 }
 
 .icon-muted {
-  color: #6b7280;
+  color: var(--im-text-tertiary);
 }
 
 .empty-box {
   padding: 24px;
   text-align: center;
-  color: #6b7280;
+  color: var(--im-text-secondary);
   font-size: 13px;
 }
 
