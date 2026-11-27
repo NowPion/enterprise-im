@@ -1,0 +1,2 @@
+Enterprise IM E2E Attachment Fixture
+Line 2: Real upload & authorized download test.
