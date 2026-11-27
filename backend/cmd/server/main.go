@@ -214,6 +214,8 @@ func buildRouter(
 	hub.SetReceiptService(receiptSvc)
 	groupRepo := repository.NewGormGroupRepository(db)
 	groupSvc := service.NewGroupService(groupRepo, seqAllocator, frPresence, idGen, hub, log)
+	adminRepo := repository.NewGormAdminRepository(db, rdb)
+	adminSvc := service.NewAdminService(adminRepo, seqAllocator, idGen, hub, hub, jwtMgr.AccessTTL(), log)
 
 	mqProducer := mq.NewProducer(rdb, cfg.MQ, log)
 	mqManager := mq.NewConsumerManager(cfg.MQ, cfg.App.NodeID, rdb, db, hub, log)
@@ -234,6 +236,7 @@ func buildRouter(
 		ReceiptController:      controller.NewReceiptController(receiptSvc),
 	})
 	api.RegisterGroupRoutes(router, jwtAuth, controller.NewGroupController(groupSvc))
+	api.RegisterAdminRoutes(router, jwtAuth, controller.NewAdminController(adminSvc))
 	api.RegisterWSRoute(router, cfg, hub)
 	return &serverRouter{
 		Engine:     router,
