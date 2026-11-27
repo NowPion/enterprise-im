@@ -75,6 +75,8 @@ export const useConversationStore = defineStore('conversation', () => {
   // Tracks server snapshot last_seq and seen push message IDs to prevent double-counting unread on replay.
   const baselineSeqByConv = new Map<string, string>()
   const seenPushIdsByConv = new Map<string, Set<string>>()
+  const placeholderConvIds = new Set<string>()
+  const hydratingConvIds = new Set<string>()
 
   const conversations = computed<Conversation[]>(() => {
     return Object.values(itemsById.value).sort((a, b) => {
@@ -132,6 +134,7 @@ export const useConversationStore = defineStore('conversation', () => {
 
   function upsertConversation(conv: Conversation): Conversation {
     const existing = itemsById.value[conv.id]
+    placeholderConvIds.delete(conv.id)
     const prevBaseline = baselineSeqByConv.get(conv.id) ?? '0'
     baselineSeqByConv.set(conv.id, maxSeq(prevBaseline, conv.last_seq || '0'))
 
@@ -231,11 +234,23 @@ export const useConversationStore = defineStore('conversation', () => {
 
   async function fetchDetail(conversationId: string): Promise<ConversationDetail> {
     const detail = await fetchConversationDetail(conversationId)
-    upsertConversation(detail.conversation)
-    if (activeConversationId.value === conversationId) {
-      activeDetail.value = detail
+    if (detail?.conversation) {
+      upsertConversation(detail.conversation)
+      if (activeConversationId.value === conversationId) {
+        activeDetail.value = detail
+      }
     }
     return detail
+  }
+
+  function hydrateConversation(conversationId: string): void {
+    if (!conversationId || hydratingConvIds.has(conversationId)) return
+    hydratingConvIds.add(conversationId)
+    void fetchDetail(conversationId)
+      .catch(() => undefined)
+      .finally(() => {
+        hydratingConvIds.delete(conversationId)
+      })
   }
 
   async function fetchMembers(conversationId: string): Promise<ConversationMember[]> {
@@ -298,7 +313,14 @@ export const useConversationStore = defineStore('conversation', () => {
     currentUserId: string,
     options: { isReplay?: boolean } = {},
   ): Conversation {
+    const hadExisting = Boolean(itemsById.value[msg.conversation_id])
     const existing = itemsById.value[msg.conversation_id] ?? createPlaceholderConversation(msg)
+    if (!hadExisting) {
+      placeholderConvIds.add(msg.conversation_id)
+      hydrateConversation(msg.conversation_id)
+    } else if (placeholderConvIds.has(msg.conversation_id)) {
+      hydrateConversation(msg.conversation_id)
+    }
     const prevLastSeq = existing.last_seq || '0'
     const baselineSeq = baselineSeqByConv.get(msg.conversation_id) ?? '0'
 
@@ -500,7 +522,17 @@ export const useConversationStore = defineStore('conversation', () => {
         }
         break
       }
+      case 'group.created':
+      case 'group.member_added': {
+        if (!existing || placeholderConvIds.has(convId)) {
+          hydrateConversation(convId)
+        }
+        break
+      }
       case 'group.updated': {
+        if (!existing || placeholderConvIds.has(convId)) {
+          hydrateConversation(convId)
+        }
         if (existing) {
           const nextTitle =
             typeof notice.payload?.name === 'string' && notice.payload.name.trim()
@@ -540,6 +572,9 @@ export const useConversationStore = defineStore('conversation', () => {
         break
       }
       case 'friend.accepted': {
+        if (!existing || placeholderConvIds.has(convId)) {
+          hydrateConversation(convId)
+        }
         if (existing) {
           itemsById.value[convId] = { ...existing, can_send: true, is_visible: true }
         }
@@ -564,6 +599,8 @@ export const useConversationStore = defineStore('conversation', () => {
     error.value = null
     baselineSeqByConv.clear()
     seenPushIdsByConv.clear()
+    placeholderConvIds.clear()
+    hydratingConvIds.clear()
   }
 
   return {

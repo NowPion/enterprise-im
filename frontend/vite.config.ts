@@ -2,6 +2,10 @@ import { fileURLToPath, URL } from 'node:url'
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 
+const backendOrigin = process.env.IM_BACKEND_ORIGIN || 'http://127.0.0.1:8080'
+const wsOrigin = backendOrigin.replace(/^http/, 'ws')
+const vitePort = Number(process.env.IM_VITE_PORT || 5173)
+
 export default defineConfig({
   plugins: [vue()],
   resolve: {
@@ -10,18 +14,18 @@ export default defineConfig({
     },
   },
   server: {
-    port: 5173,
+    port: Number.isFinite(vitePort) && vitePort > 0 ? vitePort : 5173,
     proxy: {
       '/api': {
-        target: 'http://127.0.0.1:8080',
+        target: backendOrigin,
         changeOrigin: true,
       },
       '/uploads': {
-        target: 'http://127.0.0.1:8080',
+        target: backendOrigin,
         changeOrigin: true,
       },
       '/ws': {
-        target: 'ws://127.0.0.1:8080',
+        target: wsOrigin,
         ws: true,
         changeOrigin: true,
       },
