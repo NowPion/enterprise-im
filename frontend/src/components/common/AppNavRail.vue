@@ -114,10 +114,10 @@ async function handleLogout(scope: LogoutScope) {
         <AppAvatar
           :src="authStore.user?.avatar_url"
           :name="authStore.user?.nickname || authStore.user?.username"
-          :size="38"
+          :size="40"
           :show-online="true"
           :online="authStore.wsState === 'connected'"
-          rounded="md"
+          rounded="full"
         />
       </button>
 
@@ -131,16 +131,18 @@ async function handleLogout(scope: LogoutScope) {
           :title="item.label"
           @click="navigateTo(item.path)"
         >
-          <el-icon :size="20">
-            <ChatDotRound v-if="item.key === 'chat'" />
-            <User v-else-if="item.key === 'contacts'" />
-            <UserFilled v-else-if="item.key === 'groups'" />
-            <Monitor v-else />
-          </el-icon>
-          <span class="nav-rail__label">{{ item.label }}</span>
-          <span v-if="item.badge && item.badge > 0" class="nav-rail__badge">
-            {{ item.badge > 99 ? '99+' : item.badge }}
+          <span class="nav-rail__icon-wrap">
+            <el-icon :size="20">
+              <ChatDotRound v-if="item.key === 'chat'" />
+              <User v-else-if="item.key === 'contacts'" />
+              <UserFilled v-else-if="item.key === 'groups'" />
+              <Monitor v-else />
+            </el-icon>
+            <span v-if="item.badge && item.badge > 0" class="nav-rail__badge">
+              {{ item.badge > 99 ? '99+' : item.badge }}
+            </span>
           </span>
+          <span class="nav-rail__label">{{ item.label }}</span>
         </button>
       </div>
     </div>
@@ -152,13 +154,17 @@ async function handleLogout(scope: LogoutScope) {
         title="个人资料与安全"
         @click="emit('openProfile')"
       >
-        <el-icon :size="20"><Setting /></el-icon>
+        <span class="nav-rail__icon-wrap">
+          <el-icon :size="20"><Setting /></el-icon>
+        </span>
         <span class="nav-rail__label">设置</span>
       </button>
 
       <el-dropdown trigger="click" placement="right-end" @command="handleLogout">
         <button type="button" class="nav-rail__item" title="退出登录">
-          <el-icon :size="20"><SwitchButton /></el-icon>
+          <span class="nav-rail__icon-wrap">
+            <el-icon :size="20"><SwitchButton /></el-icon>
+          </span>
           <span class="nav-rail__label">退出</span>
         </button>
         <template #dropdown>
@@ -177,13 +183,15 @@ async function handleLogout(scope: LogoutScope) {
   width: var(--im-rail-width);
   flex-shrink: 0;
   background-color: var(--im-bg-rail);
-  color: var(--im-text-inverse);
+  backdrop-filter: blur(22px) saturate(180%);
+  -webkit-backdrop-filter: blur(22px) saturate(180%);
+  color: var(--im-text-primary);
   display: flex;
   flex-direction: column;
   justify-content: space-between;
   align-items: center;
-  padding: 16px 0;
-  border-right: 1px solid #1f2937;
+  padding: 14px 6px;
+  border-right: 0.5px solid var(--im-separator);
   user-select: none;
 }
 
@@ -191,23 +199,32 @@ async function handleLogout(scope: LogoutScope) {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 20px;
+  gap: 18px;
   width: 100%;
 }
 
 .nav-rail__avatar-btn {
   border: none;
-  padding: 0;
+  padding: 2px;
   background: transparent;
   cursor: pointer;
-  border-radius: 8px;
+  border-radius: 9999px;
+  transition: transform 0.14s var(--im-ease-ios), background-color 0.14s ease;
+}
+
+.nav-rail__avatar-btn:hover {
+  background-color: var(--im-bg-hover);
+}
+
+.nav-rail__avatar-btn:active {
+  transform: scale(0.95);
 }
 
 .nav-rail__menu {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   width: 100%;
 }
 
@@ -215,71 +232,91 @@ async function handleLogout(scope: LogoutScope) {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   width: 100%;
 }
 
 .nav-rail__item {
   position: relative;
-  width: 44px;
-  height: 44px;
+  width: 58px;
+  padding: 6px 4px;
   border: none;
-  border-radius: 8px;
+  border-radius: 12px;
   background: transparent;
-  color: #9ca3af;
+  color: var(--im-text-secondary);
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: 3px;
   cursor: pointer;
-  transition: background-color 0.15s ease, color 0.15s ease;
+  transition: background-color 0.16s var(--im-ease-ios),
+    color 0.16s var(--im-ease-ios),
+    transform 0.12s var(--im-ease-ios);
 }
 
 .nav-rail__item:hover {
-  background-color: #1f2937;
-  color: #ffffff;
+  background-color: var(--im-bg-hover);
+  color: var(--im-text-primary);
+}
+
+.nav-rail__item:active {
+  transform: scale(0.96);
 }
 
 .nav-rail__item.is-active {
-  background-color: #2563eb;
-  color: #ffffff;
+  background-color: var(--im-accent-primary-soft);
+  color: var(--im-accent-primary);
+}
+
+.nav-rail__icon-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .nav-rail__label {
-  display: none;
+  display: block;
   font-size: 11px;
-  line-height: 1.2;
+  font-weight: 500;
+  line-height: 1.15;
+}
+
+.nav-rail__item.is-active .nav-rail__label {
+  font-weight: 600;
 }
 
 .nav-rail__badge {
   position: absolute;
-  top: 2px;
-  right: 2px;
-  min-width: 16px;
-  height: 16px;
-  padding: 0 4px;
+  top: -5px;
+  right: -10px;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 5px;
   border-radius: 9999px;
   background-color: var(--im-status-unread);
   color: #ffffff;
   font-size: 10px;
   font-weight: 600;
-  line-height: 16px;
+  line-height: 17px;
   text-align: center;
+  box-shadow: 0 0 0 1.5px #f2f2f7;
 }
 
 @media (max-width: 767px) {
   .nav-rail {
     width: 100%;
-    height: 56px;
+    height: 58px;
     flex-direction: row;
-    padding: 0 12px;
+    padding: 4px 10px;
     border-right: none;
-    border-top: 1px solid #1f2937;
+    border-top: 0.5px solid var(--im-separator);
   }
 
   .nav-rail__top {
     flex-direction: row;
-    gap: 8px;
+    gap: 4px;
     flex: 1;
   }
 
@@ -290,23 +327,19 @@ async function handleLogout(scope: LogoutScope) {
   .nav-rail__menu {
     flex-direction: row;
     justify-content: space-around;
-    gap: 4px;
+    gap: 2px;
   }
 
   .nav-rail__bottom {
     width: auto;
     flex-direction: row;
-    gap: 4px;
+    gap: 2px;
   }
 
   .nav-rail__item {
     width: 52px;
-    height: 44px;
+    padding: 4px 2px;
     gap: 2px;
-  }
-
-  .nav-rail__label {
-    display: block;
   }
 }
 </style>

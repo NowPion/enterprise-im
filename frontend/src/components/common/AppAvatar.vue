@@ -17,7 +17,7 @@ const props = withDefaults(defineProps<Props>(), {
   size: 40,
   online: false,
   showOnline: false,
-  rounded: 'md',
+  rounded: 'full',
 })
 
 const { resolvedUrl } = useAuthorizedMediaSrc(() => props.src)
@@ -80,7 +80,7 @@ const sizeStyle = computed(() => ({
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  background-color: #1f2937;
+  background-color: #8e8e93;
   color: #ffffff;
   font-weight: 600;
   user-select: none;
@@ -88,11 +88,11 @@ const sizeStyle = computed(() => ({
 }
 
 .app-avatar.is-sm {
-  border-radius: 4px;
+  border-radius: 8px;
 }
 
 .app-avatar.is-md {
-  border-radius: 8px;
+  border-radius: 11px;
 }
 
 .app-avatar.is-full {
@@ -113,10 +113,10 @@ const sizeStyle = computed(() => ({
 
 .app-avatar__status {
   position: absolute;
-  right: -2px;
-  bottom: -2px;
-  width: 10px;
-  height: 10px;
+  right: -1px;
+  bottom: -1px;
+  width: 11px;
+  height: 11px;
   border-radius: 9999px;
   background-color: var(--im-status-offline);
   border: 2px solid var(--im-bg-surface);

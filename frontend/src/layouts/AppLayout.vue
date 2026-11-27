@@ -49,7 +49,7 @@ onMounted(() => {
   width: 100vw;
   height: 100vh;
   overflow: hidden;
-  background-color: var(--im-bg-page);
+  background-color: var(--im-bg-grouped);
 }
 
 .app-layout__workspace {
@@ -67,7 +67,7 @@ onMounted(() => {
   }
 
   .app-layout__workspace {
-    height: calc(100vh - 56px);
+    height: calc(100vh - 58px);
   }
 }
 </style>

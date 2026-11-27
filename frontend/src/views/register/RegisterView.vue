@@ -96,7 +96,7 @@ async function handleSubmit() {
     <div class="auth-card">
       <div class="auth-card__brand">
         <div class="auth-card__logo">
-          <el-icon :size="22"><ChatDotSquare /></el-icon>
+          <el-icon :size="26"><ChatDotSquare /></el-icon>
         </div>
         <div>
           <h1 class="auth-card__title">创建账号</h1>
@@ -191,49 +191,53 @@ async function handleSubmit() {
   align-items: center;
   justify-content: center;
   padding: 24px;
-  background-color: var(--im-bg-page);
+  background-color: var(--im-bg-grouped);
 }
 
 .auth-card {
   width: 100%;
-  max-width: 400px;
+  max-width: 420px;
   background-color: var(--im-bg-surface);
-  border: 1px solid var(--im-border-base);
-  border-radius: var(--im-radius-lg);
-  padding: 32px;
+  border: 0.5px solid var(--im-border-light);
+  border-radius: var(--im-radius-xl);
+  padding: 30px 28px 24px;
   box-shadow: var(--im-shadow-md);
 }
 
 .auth-card__brand {
   display: flex;
+  flex-direction: column;
   align-items: center;
+  text-align: center;
   gap: 12px;
-  margin-bottom: 24px;
+  margin-bottom: 22px;
 }
 
 .auth-card__logo {
-  width: 44px;
-  height: 44px;
-  border-radius: 10px;
-  background-color: var(--im-bg-rail);
+  width: 56px;
+  height: 56px;
+  border-radius: 14px;
+  background-color: var(--im-accent-primary);
   color: var(--im-text-inverse);
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
+  box-shadow: 0 4px 12px rgba(0, 122, 255, 0.25);
 }
 
 .auth-card__title {
   margin: 0;
-  font-size: 20px;
-  font-weight: 600;
+  font-size: 24px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
   color: var(--im-text-primary);
 }
 
 .auth-card__subtitle {
-  margin: 2px 0 0;
-  font-size: 13px;
-  color: var(--im-text-muted);
+  margin: 4px 0 0;
+  font-size: 14px;
+  color: var(--im-text-secondary);
 }
 
 .auth-card__alert {
@@ -243,22 +247,26 @@ async function handleSubmit() {
 .auth-card__submit {
   width: 100%;
   margin-top: 8px;
+  height: 44px;
+  font-size: 16px;
+  font-weight: 600;
+  border-radius: 12px;
 }
 
 .auth-card__footer {
   margin-top: 20px;
   padding-top: 16px;
-  border-top: 1px solid var(--im-border-light);
+  border-top: 0.5px solid var(--im-border-light);
   display: flex;
   justify-content: center;
   gap: 6px;
-  font-size: 13px;
+  font-size: 14px;
   color: var(--im-text-secondary);
 }
 
 .auth-card__link {
   color: var(--im-accent-primary);
-  font-weight: 500;
+  font-weight: 600;
 }
 
 .auth-card__link:hover {
