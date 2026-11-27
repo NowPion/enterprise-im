@@ -96,3 +96,20 @@
 
 1. **审阅与合入前 live 复测**：可在配置本地容器 `MYSQL_PASSWORD` / `REDIS_PASSWORD` 环境变量后执行 `cd backend && go test -count=1 -race -v ./...`，复核上述 11 个 live MySQL/Redis 集成用例及实际二进制 `/healthz` + Stage 4 真实请求，再由主仓库审阅合入 `main`。
 2. **第五阶段接入点**：后续阶段实现 WebSocket Hub（`/ws`）、Redis Streams 消费组后，只需在 [backend/cmd/server/main.go](backend/cmd/server/main.go) 将 `newLoggedNoopSessionRevokeHook` 与 `ShutdownHooks.{NotifyAndCloseWS,DrainMQ}` 替换为真实 Hub/MQ 实现即可。
+
+---
+
+## 六、第九阶段进展（联调工装与管理后台监控 / 禁用踢下线）
+
+### `agent/stage9-admin-qa` · 2026-11-27
+
+- **公共联调工装**：
+  - 更新 [frontend/vite.config.ts](frontend/vite.config.ts) 读取 `IM_BACKEND_ORIGIN` 与 `IM_VITE_PORT` 环境变量代理 `/api`、`/uploads` 与 `/ws`（保持默认 `127.0.0.1:8080` / `5173` 行为不变）。
+  - 在 [frontend/package.json](frontend/package.json) 引入 `@playwright/test`，新增 [frontend/playwright.config.ts](frontend/playwright.config.ts)（收口 `social`、`chat`、`reconnect`、`admin` 与 `admin-firefox` 项目）、`frontend/e2e/helpers/`、`frontend/e2e/fixtures/imFixtures.ts` 以及隔离栈启动脚本 [scripts/stage9-stack.sh](scripts/stage9-stack.sh)。
+- **后端 Admin API 补齐与接线**：
+  - 新增 [backend/internal/repository/admin_repo.go](backend/internal/repository/admin_repo.go)、[backend/internal/service/admin_service.go](backend/internal/service/admin_service.go)、[backend/internal/controller/admin_controller.go](backend/internal/controller/admin_controller.go)、[backend/internal/api/admin_routes.go](backend/internal/api/admin_routes.go) 并在 [backend/cmd/server/main.go](backend/cmd/server/main.go) 完成路由注册。
+  - 实现并接通 `docs/api.md` 约定的全部 11 个 `/api/v1/admin/*` 接口：用户列表/详情、禁用/启用（含唯一管理员保护 `17004`、会话撤销、JTI 黑名单与 `Hub.RevokeSessions` 实时踢下线）、单端/全端 `kick`、群监管列表/详情/强制解散、消息审计查询、运行监控概览（真实 Redis 在线态/Streams + MySQL + Go Runtime）、Streams 消费组指标与 MySQL/Redis 依赖健康探活。
+- **实测验证结果**：
+  - `cd backend && go vet ./... && go build ./... && go test -p 1 -count=1 -race ./internal/repository ./internal/service ./internal/controller ./internal/api ./cmd/server`：退出码 **`0`**。
+  - `cd frontend && npm run typecheck && npm test`：退出码 **`0`**（`25/25` 通过）。
+  - `cd frontend && IM_VITE_PORT=5177 IM_BACKEND_ORIGIN=http://127.0.0.1:8084 npm run test:e2e:admin`：退出码 **`0`**（Chromium 4 用例 + Firefox 2 用例共 **6/6** 通过），详细报告与截图见 [docs/stage9/admin.md](docs/stage9/admin.md)。
