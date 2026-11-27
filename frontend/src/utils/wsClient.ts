@@ -134,6 +134,10 @@ function requestId(): string {
   return Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('')
 }
 
+function isBrowserOffline(): boolean {
+  return typeof navigator !== 'undefined' && navigator.onLine === false
+}
+
 export class WSClient {
   private readonly options: WSClientOptions
   private dynamicOptions: Partial<Pick<WSClientOptions, 'getAccessToken' | 'getAccountId' | 'getLastSeq'>> = {}
@@ -162,6 +166,8 @@ export class WSClient {
   private awaitingPong?: string
   private retryCap = 1000
   private active = false
+  private boundOnlineHandler?: () => void
+  private boundOfflineHandler?: () => void
 
   constructor(options: WSClientOptions) {
     this.options = options
@@ -237,11 +243,13 @@ export class WSClient {
     }
     this.active = true
     this.activeAccountKey = nextAccount ?? undefined
+    this.bindNetworkListeners()
     this.attempt()
   }
 
   disconnect() {
     this.active = false
+    this.unbindNetworkListeners()
     clearTimeout(this.retry)
     this.retry = undefined
     this.retryCap = 1000
@@ -254,6 +262,77 @@ export class WSClient {
     if (socket) {
       socket.close()
       this.emit('close', { code: 1000, reason: 'Client disconnected' })
+    }
+  }
+
+  clearAuthRejection() {
+    this.rejectedToken = undefined
+    this.lastPreOpenFailedToken = undefined
+    this.authFailures = 0
+  }
+
+  clearAuthRejectionAndRetry() {
+    this.clearAuthRejection()
+    this.retryCap = 1000
+    if (!this.active) {
+      this.connect()
+      return
+    }
+    if (!this.socket) {
+      clearTimeout(this.retry)
+      this.retry = undefined
+      this.attempt()
+    }
+  }
+
+  private bindNetworkListeners() {
+    if (typeof window === 'undefined' || typeof window.addEventListener !== 'function') return
+    if (!this.boundOnlineHandler) {
+      this.boundOnlineHandler = () => {
+        if (!this.active) return
+        this.rejectedToken = undefined
+        this.lastPreOpenFailedToken = undefined
+        this.authFailures = 0
+        this.retryCap = 1000
+        if (!this.socket) {
+          clearTimeout(this.retry)
+          this.retry = undefined
+          this.attempt()
+        } else if (this.authenticated && this.socket.readyState === 1) {
+          this.ping(this.socket)
+        }
+      }
+      window.addEventListener('online', this.boundOnlineHandler)
+    }
+    if (!this.boundOfflineHandler) {
+      this.boundOfflineHandler = () => {
+        if (!this.active) return
+        clearTimeout(this.retry)
+        this.retry = undefined
+        const socket = this.socket
+        if (socket) {
+          this.release()
+          try {
+            socket.close()
+          } catch {
+            // Ignore close errors when browser already lost network.
+          }
+          this.emit('close', { code: 1006, reason: 'Network offline' })
+        }
+      }
+      window.addEventListener('offline', this.boundOfflineHandler)
+    }
+  }
+
+  private unbindNetworkListeners() {
+    if (typeof window === 'undefined' || typeof window.removeEventListener !== 'function') return
+    if (this.boundOnlineHandler) {
+      window.removeEventListener('online', this.boundOnlineHandler)
+      this.boundOnlineHandler = undefined
+    }
+    if (this.boundOfflineHandler) {
+      window.removeEventListener('offline', this.boundOfflineHandler)
+      this.boundOfflineHandler = undefined
     }
   }
 
@@ -350,6 +429,10 @@ export class WSClient {
   private attempt() {
     clearTimeout(this.retry)
     this.retry = undefined
+    if (isBrowserOffline()) {
+      this.scheduleRetry()
+      return
+    }
     let socket: Transport
     let token: string
     let accountKey: string | null
@@ -398,12 +481,13 @@ export class WSClient {
       const wasOpened = this.socketOpened
       const wasAuthenticated = this.authenticated
       const hadErrorFrame = this.authRejected
-      const pre101Error = !wasOpened && this.hadTransportError
-      const repeatedPreOpenClose = !wasOpened && this.socketToken !== undefined && this.socketToken === this.lastPreOpenFailedToken
-      const authRejected = this.authRejected || (!wasAuthenticated && event.code === WS_CLOSE_POLICY_VIOLATION) || pre101Error || repeatedPreOpenClose
+      const offline = isBrowserOffline()
+      const pre101Error = !offline && !wasOpened && this.hadTransportError
+      const repeatedPreOpenClose = !offline && !wasOpened && this.socketToken !== undefined && this.socketToken === this.lastPreOpenFailedToken
+      const authRejected = !offline && (this.authRejected || (!wasAuthenticated && event.code === WS_CLOSE_POLICY_VIOLATION) || pre101Error || repeatedPreOpenClose)
       const authFatal = this.authFatal
       const rejectedToken = this.rejectedToken ?? (authRejected ? this.socketToken : undefined)
-      if (!wasOpened && this.socketToken !== undefined) {
+      if (!offline && !wasOpened && this.socketToken !== undefined) {
         this.lastPreOpenFailedToken = this.socketToken
       }
       this.release()
