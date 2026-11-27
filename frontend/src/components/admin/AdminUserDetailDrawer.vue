@@ -54,7 +54,7 @@ async function handleKickSession(session: AdminUserSession) {
   >
     <div v-loading="loading" class="drawer-body">
       <template v-if="detail">
-        <section class="info-section">
+        <section class="info-section ios-grouped-section">
           <h4 class="sec-title">账号档案</h4>
           <el-descriptions :column="2" border size="small">
             <el-descriptions-item label="用户 ID">
@@ -82,7 +82,7 @@ async function handleKickSession(session: AdminUserSession) {
           </el-descriptions>
         </section>
 
-        <section class="info-section">
+        <section class="info-section ios-grouped-section">
           <h4 class="sec-title">设备会话列表 ({{ detail.sessions.length }})</h4>
           <el-table :data="detail.sessions" border size="small" empty-text="暂无会话记录">
             <el-table-column prop="id" label="Session ID" width="100" />
@@ -118,7 +118,7 @@ async function handleKickSession(session: AdminUserSession) {
           </el-table>
         </section>
 
-        <section class="info-section">
+        <section class="info-section ios-grouped-section">
           <h4 class="sec-title">近期审计摘要</h4>
           <el-table :data="detail.audit_summary" border size="small" empty-text="暂无相关审计记录">
             <el-table-column prop="action" label="动作" width="140" />
@@ -140,20 +140,21 @@ async function handleKickSession(session: AdminUserSession) {
 .drawer-body {
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: 16px;
 }
 
 .info-section {
+  padding: 16px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
 }
 
 .sec-title {
   margin: 0;
-  font-size: 13px;
+  font-size: 15px;
   font-weight: 600;
-  color: #111827;
+  color: var(--im-text-primary);
 }
 
 .mono {
@@ -161,21 +162,21 @@ async function handleKickSession(session: AdminUserSession) {
 }
 
 .status-ok {
-  color: #16a34a;
-  font-weight: 500;
+  color: #248a3d;
+  font-weight: 600;
 }
 
 .status-danger {
-  color: #dc2626;
-  font-weight: 500;
+  color: var(--im-status-danger);
+  font-weight: 600;
 }
 
 .status-muted {
-  color: #9ca3af;
+  color: var(--im-text-muted);
 }
 
 .time-text {
   font-size: 12px;
-  color: #4b5563;
+  color: var(--im-text-secondary);
 }
 </style>

@@ -96,13 +96,13 @@ onMounted(() => {
 
 <template>
   <div class="admin-page">
-    <section class="panel-card">
+    <section class="panel-card ios-grouped-section">
       <div class="panel-header">
         <div>
-          <h2 class="panel-title">群组监管</h2>
+          <h2 class="panel-title ios-large-title">群组监管</h2>
           <p class="panel-desc">检索全平台群聊、核查群成员与会话序号、执行合规强制解散。</p>
         </div>
-        <el-button :icon="Refresh" :loading="adminStore.groupsLoading" @click="handleSearch">
+        <el-button type="primary" plain :icon="Refresh" :loading="adminStore.groupsLoading" @click="handleSearch">
           刷新
         </el-button>
       </div>
@@ -165,9 +165,10 @@ onMounted(() => {
         <el-table-column label="操作" width="210" fixed="right">
           <template #default="{ row }">
             <div class="row-actions">
-              <el-button link size="small" @click="openDetail(row)">详情</el-button>
+              <el-button link type="primary" size="small" @click="openDetail(row)">详情</el-button>
               <el-button
                 link
+                type="primary"
                 size="small"
                 @click="jumpToMessageAudit(row.conversation_id)"
               >
@@ -208,10 +209,7 @@ onMounted(() => {
 }
 
 .panel-card {
-  background-color: #ffffff;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  padding: 18px 20px;
+  padding: 20px;
   display: flex;
   flex-direction: column;
   gap: 14px;
@@ -225,16 +223,13 @@ onMounted(() => {
 }
 
 .panel-title {
-  margin: 0;
-  font-size: 16px;
-  font-weight: 600;
-  color: #111827;
+  font-size: 24px;
 }
 
 .panel-desc {
   margin: 4px 0 0;
-  font-size: 12px;
-  color: #6b7280;
+  font-size: 13px;
+  color: var(--im-text-secondary);
 }
 
 .filter-bar {
@@ -253,18 +248,18 @@ onMounted(() => {
 }
 
 .status-ok {
-  color: #16a34a;
-  font-weight: 500;
+  color: #248a3d;
+  font-weight: 600;
 }
 
 .status-danger {
-  color: #dc2626;
-  font-weight: 500;
+  color: var(--im-status-danger);
+  font-weight: 600;
 }
 
 .time-text {
   font-size: 12px;
-  color: #4b5563;
+  color: var(--im-text-secondary);
 }
 
 .row-actions {
