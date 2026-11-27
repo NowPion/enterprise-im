@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { ChatDotRound, Hide, RefreshRight, Search, View } from '@element-plus/icons-vue'
+import EmptyState from '@/components/common/EmptyState.vue'
 import ConversationItem from './ConversationItem.vue'
 import type { Conversation } from '@/types/conversation'
 
@@ -22,9 +23,11 @@ const emit = defineEmits<{
   'toggle-mute': [conversation: Conversation]
   'toggle-hide': [conversation: Conversation]
   refresh: []
+  'go-contacts': []
 }>()
 
 const keyword = ref('')
+const hasSearchKeyword = computed(() => keyword.value.trim().length > 0)
 
 const filteredConversations = computed(() => {
   const q = keyword.value.trim().toLowerCase()
@@ -108,9 +111,20 @@ const filteredConversations = computed(() => {
         </div>
       </template>
 
+      <EmptyState
+        v-else-if="!loading && !hasSearchKeyword"
+        title="暂无会话"
+        description="选择好友或添加新朋友，即可开启会话"
+        :icon="ChatDotRound"
+      >
+        <el-button type="primary" @click="emit('go-contacts')">
+          前往联系人发起聊天
+        </el-button>
+      </EmptyState>
+
       <div v-else-if="!loading" class="conv-list__empty">
         <el-icon :size="30" class="conv-list__empty-icon"><ChatDotRound /></el-icon>
-        <p>{{ keyword ? '未找到匹配的会话' : '暂无会话，前往联系人发起聊天' }}</p>
+        <p>未找到匹配的会话</p>
       </div>
     </div>
   </aside>

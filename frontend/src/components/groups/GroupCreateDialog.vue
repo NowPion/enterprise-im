@@ -184,6 +184,9 @@ function closeDialog() {
     :model-value="modelValue"
     title="创建群聊"
     width="620px"
+    append-to-body
+    class="group-create-dialog"
+    modal-class="group-create-overlay"
     :close-on-click-modal="false"
     @update:model-value="emit('update:modelValue', $event)"
   >
@@ -531,5 +534,148 @@ function closeDialog() {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+}
+
+@media (max-width: 600px) {
+  .form-top-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+  }
+
+  .avatar-uploader {
+    width: 100%;
+    flex-direction: row;
+    justify-content: flex-start;
+    gap: 12px;
+  }
+
+  .avatar-preview {
+    width: 56px;
+    height: 56px;
+    border-radius: 14px;
+  }
+
+  .avatar-actions {
+    align-items: flex-start;
+  }
+
+  .candidate-list {
+    max-height: 180px;
+  }
+
+  .dialog-footer {
+    width: 100%;
+  }
+
+  .dialog-footer .el-button {
+    flex: 1;
+  }
+}
+</style>
+
+<style>
+html body .el-overlay.group-create-overlay {
+  position: fixed !important;
+  inset: 0 !important;
+  z-index: 4000 !important;
+  --el-overlay-color: #363940;
+  --el-overlay-color-light: #363940;
+  --el-overlay-color-lighter: #363940;
+  --el-mask-color: #363940;
+  background: #363940 !important;
+  background-color: #363940 !important;
+  opacity: 1 !important;
+  animation: none !important;
+  transition: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+html body .el-overlay.group-create-overlay::before,
+html body .el-overlay.group-create-overlay .el-overlay-dialog::before {
+  content: none !important;
+  display: none !important;
+}
+
+html body .el-overlay.group-create-overlay .el-overlay-dialog {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  overflow: hidden;
+  background: transparent !important;
+  animation: none !important;
+  transition: none !important;
+}
+
+html body .el-overlay.group-create-overlay .el-dialog.group-create-dialog {
+  width: min(620px, calc(100vw - 32px)) !important;
+  max-width: calc(100vw - 32px);
+  max-height: calc(100dvh - 32px);
+  margin: 0 !important;
+  display: flex;
+  flex-direction: column;
+  background: #ffffff !important;
+  background-color: #ffffff !important;
+  opacity: 1 !important;
+  isolation: isolate;
+}
+
+html body .el-overlay.group-create-overlay .el-dialog.group-create-dialog .el-dialog__header,
+html body .el-overlay.group-create-overlay .el-dialog.group-create-dialog .el-dialog__footer {
+  flex-shrink: 0;
+  background-color: #ffffff !important;
+}
+
+html body .el-overlay.group-create-overlay .el-dialog.group-create-dialog .el-dialog__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  background-color: #ffffff !important;
+}
+
+html body .el-overlay.group-create-overlay .el-dialog.group-create-dialog .el-input__wrapper,
+html body .el-overlay.group-create-overlay .el-dialog.group-create-dialog .el-textarea__inner {
+  background-color: #f2f2f7 !important;
+}
+
+html body .el-overlay.group-create-overlay .el-dialog.group-create-dialog .el-input__wrapper.is-focus,
+html body .el-overlay.group-create-overlay .el-dialog.group-create-dialog .el-textarea__inner:focus {
+  background-color: #ffffff !important;
+}
+
+@media (max-width: 768px) {
+  html body .el-overlay.group-create-overlay {
+    background: #363940 !important;
+    background-color: #363940 !important;
+    opacity: 1 !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
+
+  html body .el-overlay.group-create-overlay .el-overlay-dialog {
+    align-items: flex-start;
+    padding: 8px 8px calc(66px + env(safe-area-inset-bottom, 0px));
+  }
+
+  html body .el-overlay.group-create-overlay .el-dialog.group-create-dialog {
+    width: calc(100vw - 16px) !important;
+    max-width: calc(100vw - 16px);
+    max-height: calc(100dvh - 74px - env(safe-area-inset-bottom, 0px));
+    margin: 0 !important;
+  }
+
+  html body .el-overlay.group-create-overlay .el-dialog.group-create-dialog .el-dialog__header {
+    padding: 14px 16px 10px !important;
+  }
+
+  html body .el-overlay.group-create-overlay .el-dialog.group-create-dialog .el-dialog__body {
+    padding: 12px 16px !important;
+  }
+
+  html body .el-overlay.group-create-overlay .el-dialog.group-create-dialog .el-dialog__footer {
+    padding: 10px 16px 14px !important;
+  }
 }
 </style>
