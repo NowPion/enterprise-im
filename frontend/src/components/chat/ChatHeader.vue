@@ -52,11 +52,12 @@ const isGroupDisbanded = computed(
       <button
         v-if="showBack"
         type="button"
-        class="chat-header__back-btn"
+        class="chat-header__back-btn ios-chevron-back"
         title="返回会话列表"
         @click="emit('back')"
       >
-        <el-icon :size="16"><ArrowLeft /></el-icon>
+        <el-icon :size="18"><ArrowLeft /></el-icon>
+        <span>消息</span>
       </button>
 
       <AuthorizedAvatar
@@ -65,6 +66,7 @@ const isGroupDisbanded = computed(
         :size="38"
         :online="Boolean((detail?.peer ?? conversation.peer)?.online)"
         :show-online="conversation.type === 'single'"
+        shape="circle"
       />
 
       <div class="chat-header__info">
@@ -99,7 +101,7 @@ const isGroupDisbanded = computed(
       <el-tooltip :content="conversation.is_muted ? '取消免打扰' : '消息免打扰'" placement="bottom">
         <el-button
           size="small"
-          :type="conversation.is_muted ? 'info' : 'default'"
+          :type="conversation.is_muted ? 'primary' : 'default'"
           plain
           :icon="conversation.is_muted ? MuteNotification : Bell"
           @click="emit('toggle-mute')"
@@ -108,6 +110,7 @@ const isGroupDisbanded = computed(
 
       <el-button
         size="small"
+        type="primary"
         plain
         :icon="UserFilled"
         @click="emit('open-members')"
@@ -118,6 +121,7 @@ const isGroupDisbanded = computed(
       <el-button
         v-if="conversation.type === 'group' && conversation.group_id"
         size="small"
+        type="primary"
         plain
         :icon="Setting"
         @click="emit('open-group', conversation.group_id)"
@@ -130,15 +134,17 @@ const isGroupDisbanded = computed(
 
 <style scoped>
 .chat-header {
-  height: 60px;
+  height: 58px;
   flex-shrink: 0;
-  padding: 0 16px;
+  padding: 0 18px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  background-color: #ffffff;
-  border-bottom: 1px solid #e5e7eb;
+  background-color: var(--im-bg-toolbar);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  border-bottom: 0.5px solid var(--im-separator);
 }
 
 .chat-header__left {
@@ -149,16 +155,8 @@ const isGroupDisbanded = computed(
 }
 
 .chat-header__back-btn {
-  border: 1px solid #e5e7eb;
-  background-color: #ffffff;
-  color: #111827;
-  width: 30px;
-  height: 30px;
-  border-radius: 4px;
   display: none;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
+  flex-shrink: 0;
 }
 
 @media (max-width: 768px) {
@@ -171,7 +169,7 @@ const isGroupDisbanded = computed(
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 1px;
 }
 
 .chat-header__title-row {
@@ -182,9 +180,9 @@ const isGroupDisbanded = computed(
 
 .chat-header__title {
   margin: 0;
-  font-size: 15px;
+  font-size: 17px;
   font-weight: 600;
-  color: #111827;
+  color: var(--im-text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -192,11 +190,11 @@ const isGroupDisbanded = computed(
 
 .chat-header__readonly-tag {
   font-size: 11px;
-  padding: 1px 6px;
-  border-radius: 4px;
-  background-color: #f5f6f8;
-  color: #4b5563;
-  border: 1px solid #e5e7eb;
+  font-weight: 500;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  background-color: var(--im-bg-fill);
+  color: var(--im-text-secondary);
   flex-shrink: 0;
 }
 
@@ -205,7 +203,7 @@ const isGroupDisbanded = computed(
   align-items: center;
   gap: 5px;
   font-size: 12px;
-  color: #6b7280;
+  color: var(--im-text-secondary);
 }
 
 .chat-header__dot {
@@ -215,11 +213,11 @@ const isGroupDisbanded = computed(
 }
 
 .chat-header__dot.is-online {
-  background-color: #10b981;
+  background-color: var(--im-status-online);
 }
 
 .chat-header__dot.is-offline {
-  background-color: #9ca3af;
+  background-color: var(--im-status-offline);
 }
 
 .chat-header__actions {

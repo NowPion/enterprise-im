@@ -42,7 +42,7 @@ const filteredConversations = computed(() => {
   <aside class="conv-list">
     <div class="conv-list__header">
       <div class="conv-list__title-row">
-        <span class="conv-list__title">会话列表</span>
+        <span class="conv-list__title ios-large-title">消息</span>
         <div class="conv-list__status-actions">
           <span
             class="conv-list__ws-pill"
@@ -55,10 +55,11 @@ const filteredConversations = computed(() => {
           <button
             type="button"
             class="conv-list__icon-btn"
+            :class="{ 'is-active': includeHidden }"
             :title="includeHidden ? '仅看可见会话' : '显示隐藏会话'"
             @click="emit('toggle-include-hidden')"
           >
-            <el-icon :size="15"><component :is="includeHidden ? View : Hide" /></el-icon>
+            <el-icon :size="16"><component :is="includeHidden ? View : Hide" /></el-icon>
           </button>
           <button
             type="button"
@@ -67,7 +68,7 @@ const filteredConversations = computed(() => {
             :disabled="loading"
             @click="emit('refresh')"
           >
-            <el-icon :size="15"><RefreshRight /></el-icon>
+            <el-icon :size="16"><RefreshRight /></el-icon>
           </button>
         </div>
       </div>
@@ -76,26 +77,28 @@ const filteredConversations = computed(() => {
         v-model="keyword"
         placeholder="搜索会话、联系人或消息预览"
         clearable
-        size="small"
         :prefix-icon="Search"
       />
     </div>
 
     <div v-loading="loading && conversations.length === 0" class="conv-list__scroll">
       <template v-if="filteredConversations.length > 0">
-        <ConversationItem
-          v-for="conv in filteredConversations"
-          :key="conv.id"
-          :conversation="conv"
-          :active="conv.id === activeConversationId"
-          @select="(id) => emit('select', id)"
-          @toggle-pin="(c) => emit('toggle-pin', c)"
-          @toggle-mute="(c) => emit('toggle-mute', c)"
-          @toggle-hide="(c) => emit('toggle-hide', c)"
-        />
+        <div class="ios-grouped-section conv-list__group">
+          <ConversationItem
+            v-for="conv in filteredConversations"
+            :key="conv.id"
+            :conversation="conv"
+            :active="conv.id === activeConversationId"
+            @select="(id) => emit('select', id)"
+            @toggle-pin="(c) => emit('toggle-pin', c)"
+            @toggle-mute="(c) => emit('toggle-mute', c)"
+            @toggle-hide="(c) => emit('toggle-hide', c)"
+          />
+        </div>
         <div v-if="hasMore" class="conv-list__load-more">
           <el-button
             text
+            type="primary"
             size="small"
             :loading="loadingMore"
             @click="emit('load-more')"
@@ -106,7 +109,7 @@ const filteredConversations = computed(() => {
       </template>
 
       <div v-else-if="!loading" class="conv-list__empty">
-        <el-icon :size="28" class="conv-list__empty-icon"><ChatDotRound /></el-icon>
+        <el-icon :size="30" class="conv-list__empty-icon"><ChatDotRound /></el-icon>
         <p>{{ keyword ? '未找到匹配的会话' : '暂无会话，前往联系人发起聊天' }}</p>
       </div>
     </div>
@@ -115,19 +118,20 @@ const filteredConversations = computed(() => {
 
 <style scoped>
 .conv-list {
-  width: 280px;
+  width: var(--im-list-width);
   flex-shrink: 0;
   height: 100%;
   display: flex;
   flex-direction: column;
-  background-color: #ffffff;
-  border-right: 1px solid #e5e7eb;
+  background-color: var(--im-bg-grouped);
+  border-right: 0.5px solid var(--im-separator);
 }
 
 .conv-list__header {
-  padding: 12px;
-  border-bottom: 1px solid #e5e7eb;
-  background-color: #f5f6f8;
+  padding: 16px 14px 12px;
+  background-color: var(--im-bg-sidebar);
+  backdrop-filter: blur(18px) saturate(180%);
+  -webkit-backdrop-filter: blur(18px) saturate(180%);
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -141,9 +145,7 @@ const filteredConversations = computed(() => {
 }
 
 .conv-list__title {
-  font-size: 15px;
-  font-weight: 600;
-  color: #111827;
+  font-size: 26px;
 }
 
 .conv-list__status-actions {
@@ -155,60 +157,75 @@ const filteredConversations = computed(() => {
 .conv-list__ws-pill {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
   font-size: 11px;
-  padding: 2px 6px;
-  border-radius: 4px;
-  border: 1px solid #e5e7eb;
-  background-color: #ffffff;
-  color: #4b5563;
+  font-weight: 500;
+  padding: 3px 8px;
+  border-radius: 9999px;
+  background-color: var(--im-bg-surface);
+  border: 0.5px solid var(--im-border-light);
+  color: var(--im-text-secondary);
 }
 
 .conv-list__ws-dot {
   width: 6px;
   height: 6px;
   border-radius: 9999px;
-  background-color: #9ca3af;
+  background-color: var(--im-status-offline);
 }
 
 .conv-list__ws-pill.is-connected .conv-list__ws-dot {
-  background-color: #10b981;
+  background-color: var(--im-status-online);
 }
 
 .conv-list__icon-btn {
-  border: 1px solid #e5e7eb;
-  background-color: #ffffff;
-  color: #4b5563;
-  width: 26px;
-  height: 26px;
-  border-radius: 4px;
+  border: none;
+  background-color: var(--im-bg-fill);
+  color: var(--im-accent-primary);
+  width: 30px;
+  height: 30px;
+  border-radius: 9999px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
+  transition: background-color 0.14s ease, transform 0.12s ease;
 }
 
 .conv-list__icon-btn:hover {
-  background-color: #eceef2;
-  color: #111827;
+  background-color: var(--im-accent-primary-soft);
+}
+
+.conv-list__icon-btn.is-active {
+  background-color: var(--im-accent-primary);
+  color: #ffffff;
+}
+
+.conv-list__icon-btn:active {
+  transform: scale(0.94);
 }
 
 .conv-list__scroll {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  padding: 2px 12px 16px;
+}
+
+.conv-list__group {
+  margin-top: 2px;
 }
 
 .conv-list__load-more {
-  padding: 10px;
+  padding: 12px 10px 4px;
   text-align: center;
 }
 
 .conv-list__empty {
-  padding: 48px 16px;
+  padding: 56px 16px;
   text-align: center;
-  color: #6b7280;
-  font-size: 13px;
+  color: var(--im-text-secondary);
+  font-size: 14px;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -216,7 +233,7 @@ const filteredConversations = computed(() => {
 }
 
 .conv-list__empty-icon {
-  color: #9ca3af;
+  color: var(--im-accent-primary);
 }
 
 @media (max-width: 768px) {

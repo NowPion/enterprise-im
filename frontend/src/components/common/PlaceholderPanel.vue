@@ -27,15 +27,17 @@ const icon = computed(() => {
   <div class="placeholder-panel">
     <aside class="placeholder-panel__list">
       <div class="placeholder-panel__header">
-        <span>{{ moduleName }}</span>
+        <span class="ios-large-title">{{ moduleName }}</span>
       </div>
       <div class="placeholder-panel__list-body">
-        <p class="placeholder-panel__hint">当前路径：{{ route.fullPath }}</p>
+        <div class="ios-grouped-section placeholder-panel__card">
+          <p class="placeholder-panel__hint">当前路径：{{ route.fullPath }}</p>
+        </div>
       </div>
     </aside>
     <section class="placeholder-panel__main">
       <EmptyState :title="moduleName" :description="props.description" :icon="icon">
-        <el-button @click="router.push('/contacts')">前往联系人</el-button>
+        <el-button type="primary" @click="router.push('/contacts')">前往联系人</el-button>
       </EmptyState>
     </section>
   </div>
@@ -52,37 +54,36 @@ const icon = computed(() => {
 .placeholder-panel__list {
   width: var(--im-list-width);
   flex-shrink: 0;
-  background-color: var(--im-bg-sidebar);
-  border-right: 1px solid var(--im-border-base);
+  background-color: var(--im-bg-grouped);
+  border-right: 0.5px solid var(--im-separator);
   display: flex;
   flex-direction: column;
 }
 
 .placeholder-panel__header {
-  height: var(--im-header-height);
-  padding: 0 16px;
+  padding: 18px 16px 12px;
   display: flex;
   align-items: center;
-  font-size: 16px;
-  font-weight: 600;
-  color: var(--im-text-primary);
-  border-bottom: 1px solid var(--im-border-light);
 }
 
 .placeholder-panel__list-body {
-  padding: 16px;
+  padding: 0 12px 16px;
+}
+
+.placeholder-panel__card {
+  padding: 12px 14px;
 }
 
 .placeholder-panel__hint {
   margin: 0;
-  font-size: 12px;
-  color: var(--im-text-muted);
+  font-size: 13px;
+  color: var(--im-text-secondary);
   word-break: break-all;
 }
 
 .placeholder-panel__main {
   flex: 1;
-  background-color: var(--im-bg-surface);
+  background-color: var(--im-bg-grouped);
   min-width: 0;
 }
 

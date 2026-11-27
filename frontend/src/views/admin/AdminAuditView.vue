@@ -73,15 +73,15 @@ onMounted(() => {
 
 <template>
   <div class="admin-page">
-    <section class="panel-card">
+    <section class="panel-card ios-grouped-section">
       <div class="panel-header">
         <div>
-          <h2 class="panel-title">消息审计查询</h2>
+          <h2 class="panel-title ios-large-title">消息审计查询</h2>
           <p class="panel-desc">
             按会话 ID、发送者 ID、内容关键词与 UTC 时间范围组合检索不可变消息审计记录。
           </p>
         </div>
-        <el-button :icon="Refresh" :loading="adminStore.auditLoading" @click="handleSearch">
+        <el-button type="primary" plain :icon="Refresh" :loading="adminStore.auditLoading" @click="handleSearch">
           刷新
         </el-button>
       </div>
@@ -185,10 +185,7 @@ onMounted(() => {
 }
 
 .panel-card {
-  background-color: #ffffff;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  padding: 18px 20px;
+  padding: 20px;
   display: flex;
   flex-direction: column;
   gap: 14px;
@@ -202,16 +199,13 @@ onMounted(() => {
 }
 
 .panel-title {
-  margin: 0;
-  font-size: 16px;
-  font-weight: 600;
-  color: #111827;
+  font-size: 24px;
 }
 
 .panel-desc {
   margin: 4px 0 0;
-  font-size: 12px;
-  color: #6b7280;
+  font-size: 13px;
+  color: var(--im-text-secondary);
 }
 
 .filter-bar {
@@ -241,42 +235,42 @@ onMounted(() => {
 
 .sender-sub {
   font-size: 11px;
-  color: #6b7280;
+  color: var(--im-text-secondary);
 }
 
 .status-normal {
-  color: #111827;
+  color: var(--im-text-primary);
   font-size: 12px;
 }
 
 .status-recalled {
-  color: #dc2626;
+  color: var(--im-status-danger);
   font-size: 12px;
-  font-weight: 500;
+  font-weight: 600;
 }
 
 .content-cell {
-  font-size: 12px;
-  color: #111827;
+  font-size: 13px;
+  color: var(--im-text-primary);
   word-break: break-word;
 }
 
 .extra-text {
   margin-top: 2px;
   font-size: 11px;
-  color: #6b7280;
+  color: var(--im-text-secondary);
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   word-break: break-all;
 }
 
 .time-text {
   font-size: 12px;
-  color: #4b5563;
+  color: var(--im-text-secondary);
 }
 
 .recall-time {
   font-size: 11px;
-  color: #dc2626;
+  color: var(--im-status-danger);
 }
 
 .load-more {

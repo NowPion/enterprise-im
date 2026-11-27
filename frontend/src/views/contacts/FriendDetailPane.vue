@@ -107,28 +107,46 @@ async function handleDeleteFriend() {
 
 <template>
   <div class="friend-detail">
-    <div class="friend-detail__card">
-      <div class="friend-detail__header">
-        <AppAvatar
-          :src="friend.user.avatar_url"
-          :name="displayName"
-          :size="64"
-          :show-online="true"
-          :online="friend.online"
-        />
-        <div class="friend-detail__identity">
-          <div class="friend-detail__name-row">
-            <h2 class="friend-detail__name">{{ displayName }}</h2>
-            <el-tag size="small" :type="friend.online ? 'success' : 'info'" effect="plain">
-              {{ friend.online ? '在线' : '离线' }}
-            </el-tag>
+    <div class="friend-detail__stack">
+      <div class="ios-grouped-section friend-detail__card">
+        <div class="friend-detail__header">
+          <AppAvatar
+            :src="friend.user.avatar_url"
+            :name="displayName"
+            :size="72"
+            :show-online="true"
+            :online="friend.online"
+            rounded="full"
+          />
+          <div class="friend-detail__identity">
+            <div class="friend-detail__name-row">
+              <h2 class="friend-detail__name">{{ displayName }}</h2>
+              <el-tag size="small" :type="friend.online ? 'success' : 'info'" effect="plain">
+                {{ friend.online ? '在线' : '离线' }}
+              </el-tag>
+            </div>
+            <p class="friend-detail__sub">昵称：{{ friend.user.nickname }}</p>
+            <p class="friend-detail__sub">用户名：@{{ friend.user.username }}</p>
           </div>
-          <p class="friend-detail__sub">昵称：{{ friend.user.nickname }}</p>
-          <p class="friend-detail__sub">用户名：@{{ friend.user.username }}</p>
+        </div>
+
+        <div class="friend-detail__actions">
+          <el-button type="primary" :icon="ChatDotRound" @click="handleStartChat">
+            发消息
+          </el-button>
+          <el-button
+            type="danger"
+            plain
+            :icon="Delete"
+            :loading="deleting"
+            @click="handleDeleteFriend"
+          >
+            删除好友
+          </el-button>
         </div>
       </div>
 
-      <div class="friend-detail__meta">
+      <div class="ios-grouped-section friend-detail__meta">
         <div class="meta-row">
           <span class="meta-row__label">好友备注</span>
           <div class="meta-row__value">
@@ -178,23 +196,8 @@ async function handleDeleteFriend() {
 
         <div class="meta-row">
           <span class="meta-row__label">单聊会话 ID</span>
-          <span class="meta-row__value">{{ friend.conversation_id || '暂无' }}</span>
+          <span class="meta-row__value mono">{{ friend.conversation_id || '暂无' }}</span>
         </div>
-      </div>
-
-      <div class="friend-detail__actions">
-        <el-button type="primary" :icon="ChatDotRound" @click="handleStartChat">
-          发消息
-        </el-button>
-        <el-button
-          type="danger"
-          plain
-          :icon="Delete"
-          :loading="deleting"
-          @click="handleDeleteFriend"
-        >
-          删除好友
-        </el-button>
       </div>
     </div>
   </div>
@@ -202,29 +205,30 @@ async function handleDeleteFriend() {
 
 <style scoped>
 .friend-detail {
-  padding: 32px 24px;
+  padding: 28px 24px;
   display: flex;
   justify-content: center;
   overflow-y: auto;
   height: 100%;
 }
 
-.friend-detail__card {
+.friend-detail__stack {
   width: 100%;
-  max-width: 540px;
+  max-width: 560px;
   align-self: flex-start;
-  border: 1px solid var(--im-border-base);
-  border-radius: var(--im-radius-lg);
-  padding: 28px;
-  background-color: var(--im-bg-surface);
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.friend-detail__card {
+  padding: 22px 24px;
 }
 
 .friend-detail__header {
   display: flex;
   align-items: center;
   gap: 16px;
-  padding-bottom: 20px;
-  border-bottom: 1px solid var(--im-border-light);
 }
 
 .friend-detail__identity {
@@ -239,43 +243,59 @@ async function handleDeleteFriend() {
 
 .friend-detail__name {
   margin: 0;
-  font-size: 18px;
-  font-weight: 600;
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
   color: var(--im-text-primary);
 }
 
 .friend-detail__sub {
-  margin: 4px 0 0;
-  font-size: 13px;
-  color: var(--im-text-muted);
+  margin: 3px 0 0;
+  font-size: 14px;
+  color: var(--im-text-secondary);
+}
+
+.friend-detail__actions {
+  margin-top: 20px;
+  display: flex;
+  gap: 10px;
 }
 
 .friend-detail__meta {
-  padding: 16px 0;
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  border-bottom: 1px solid var(--im-border-light);
 }
 
 .meta-row {
+  position: relative;
   display: flex;
   align-items: flex-start;
   gap: 16px;
+  padding: 13px 18px;
+}
+
+.meta-row + .meta-row::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 18px;
+  right: 0;
+  height: 0.5px;
+  background-color: var(--im-border-light);
 }
 
 .meta-row__label {
-  width: 92px;
+  width: 96px;
   flex-shrink: 0;
-  font-size: 13px;
-  color: var(--im-text-muted);
+  font-size: 14px;
+  color: var(--im-text-secondary);
   line-height: 24px;
 }
 
 .meta-row__value {
   flex: 1;
   min-width: 0;
-  font-size: 13px;
+  font-size: 15px;
   color: var(--im-text-primary);
   line-height: 24px;
   display: flex;
@@ -285,16 +305,15 @@ async function handleDeleteFriend() {
   word-break: break-word;
 }
 
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 13px;
+}
+
 .remark-editor {
   display: flex;
   align-items: center;
   gap: 8px;
   width: 100%;
-}
-
-.friend-detail__actions {
-  margin-top: 24px;
-  display: flex;
-  gap: 12px;
 }
 </style>

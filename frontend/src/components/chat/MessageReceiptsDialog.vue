@@ -75,7 +75,7 @@ function statusTagType(status: ReceiptDeliveryStatus): 'success' | 'info' | 'war
     destroy-on-close
     @update:model-value="(val: boolean) => emit('update:visible', val)"
   >
-    <div v-if="data" class="receipts-summary">
+    <div v-if="data" class="receipts-summary ios-grouped-section">
       <div class="receipts-summary__item">
         <span class="receipts-summary__label">应接收</span>
         <strong class="receipts-summary__value">{{ data.total_members }}</strong>
@@ -101,7 +101,7 @@ function statusTagType(status: ReceiptDeliveryStatus): 'success' | 'info' | 'war
       <el-tab-pane label="未读" name="unread" />
     </el-tabs>
 
-    <div v-loading="loading" class="receipts-list">
+    <div v-loading="loading" class="receipts-list ios-grouped-section">
       <template v-if="data && data.items.length > 0">
         <div
           v-for="item in data.items"
@@ -112,9 +112,10 @@ function statusTagType(status: ReceiptDeliveryStatus): 'success' | 'info' | 'war
             <AuthorizedAvatar
               :src="item.user.avatar_url"
               :name="item.user.nickname"
-              :size="32"
+              :size="34"
               :online="item.user.online"
               show-online
+              shape="circle"
             />
             <div class="receipts-list__user-meta">
               <span class="receipts-list__name">{{ item.user.nickname }}</span>
@@ -136,7 +137,7 @@ function statusTagType(status: ReceiptDeliveryStatus): 'success' | 'info' | 'war
         </div>
 
         <div v-if="data.has_more" class="receipts-list__more">
-          <el-button text size="small" :loading="loading" @click="handleLoadMore">
+          <el-button text type="primary" size="small" :loading="loading" @click="handleLoadMore">
             加载更多成员
           </el-button>
         </div>
@@ -151,11 +152,9 @@ function statusTagType(status: ReceiptDeliveryStatus): 'success' | 'info' | 'war
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   gap: 8px;
-  padding: 10px;
-  border-radius: 6px;
-  background-color: #f5f6f8;
-  border: 1px solid #e5e7eb;
-  margin-bottom: 8px;
+  padding: 12px;
+  background-color: var(--im-bg-grouped);
+  margin-bottom: 10px;
 }
 
 .receipts-summary__item {
@@ -167,34 +166,47 @@ function statusTagType(status: ReceiptDeliveryStatus): 'success' | 'info' | 'war
 
 .receipts-summary__label {
   font-size: 11px;
-  color: #6b7280;
+  color: var(--im-text-secondary);
 }
 
 .receipts-summary__value {
-  font-size: 16px;
-  color: #111827;
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--im-text-primary);
 }
 
 .receipts-summary__value.is-read {
-  color: #10b981;
+  color: var(--im-status-online);
 }
 
 .receipts-summary__value.is-unread {
-  color: #ef4444;
+  color: var(--im-status-danger);
 }
 
 .receipts-list {
   max-height: 320px;
   overflow-y: auto;
   min-height: 120px;
+  background-color: var(--im-bg-grouped);
 }
 
 .receipts-list__row {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 4px;
-  border-bottom: 1px solid #f0f2f5;
+  padding: 10px 14px;
+  background-color: var(--im-bg-surface);
+}
+
+.receipts-list__row + .receipts-list__row::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 58px;
+  right: 0;
+  height: 0.5px;
+  background-color: var(--im-border-light);
 }
 
 .receipts-list__user {
@@ -211,25 +223,25 @@ function statusTagType(status: ReceiptDeliveryStatus): 'success' | 'info' | 'war
 }
 
 .receipts-list__name {
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 500;
-  color: #111827;
+  color: var(--im-text-primary);
 }
 
 .receipts-list__sub {
-  font-size: 11px;
-  color: #6b7280;
+  font-size: 12px;
+  color: var(--im-text-secondary);
 }
 
 .receipts-list__more {
   text-align: center;
-  padding-top: 8px;
+  padding: 10px;
 }
 
 .receipts-list__empty {
   text-align: center;
   padding: 36px 12px;
-  color: #6b7280;
-  font-size: 13px;
+  color: var(--im-text-secondary);
+  font-size: 14px;
 }
 </style>

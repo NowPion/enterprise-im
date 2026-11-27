@@ -154,11 +154,12 @@ async function handleChangePassword() {
   <el-dialog
     v-model="modelValue"
     title="账号设置"
-    width="480px"
+    width="500px"
+    class="ios-settings-dialog"
     :close-on-click-modal="false"
     destroy-on-close
   >
-    <el-tabs v-model="activeTab">
+    <el-tabs v-model="activeTab" class="ios-settings-tabs">
       <el-tab-pane name="profile">
         <template #label>
           <span class="tab-label">
@@ -167,68 +168,74 @@ async function handleChangePassword() {
           </span>
         </template>
 
-        <div class="profile-head">
-          <AppAvatar
-            :src="authStore.user?.avatar_url"
-            :name="authStore.user?.nickname || authStore.user?.username"
-            :size="64"
-            :show-online="true"
-            :online="authStore.wsState === 'connected'"
-            rounded="md"
-          />
-          <div class="profile-head__meta">
-            <div class="profile-head__name-row">
-              <span class="profile-head__username">@{{ authStore.user?.username }}</span>
-              <el-tag size="small" type="info" effect="plain">
-                {{ authStore.isAdmin ? '平台管理员' : '成员' }}
-              </el-tag>
-            </div>
-            <p class="profile-head__sub">
-              实时通道：{{ authStore.wsState === 'connected' ? '已连接' : '未连接' }}
-            </p>
-            <input
-              ref="fileInputRef"
-              type="file"
-              accept="image/jpeg,image/png,image/webp,image/gif"
-              class="hidden-file-input"
-              @change="handleAvatarChange"
+        <div class="settings-stack">
+          <div class="ios-grouped-section profile-head">
+            <AppAvatar
+              :src="authStore.user?.avatar_url"
+              :name="authStore.user?.nickname || authStore.user?.username"
+              :size="64"
+              :show-online="true"
+              :online="authStore.wsState === 'connected'"
+              rounded="full"
             />
-            <el-button
-              size="small"
-              :icon="Upload"
-              :loading="avatarUploading"
-              @click="triggerAvatarSelect"
+            <div class="profile-head__meta">
+              <div class="profile-head__name-row">
+                <span class="profile-head__username">@{{ authStore.user?.username }}</span>
+                <span class="profile-head__role-pill">
+                  {{ authStore.isAdmin ? '平台管理员' : '成员' }}
+                </span>
+              </div>
+              <p class="profile-head__sub">
+                实时通道：{{ authStore.wsState === 'connected' ? '已连接' : '未连接' }}
+              </p>
+              <input
+                ref="fileInputRef"
+                type="file"
+                accept="image/jpeg,image/png,image/webp,image/gif"
+                class="hidden-file-input"
+                @change="handleAvatarChange"
+              />
+              <el-button
+                size="small"
+                type="primary"
+                plain
+                :icon="Upload"
+                :loading="avatarUploading"
+                @click="triggerAvatarSelect"
+              >
+                更换头像
+              </el-button>
+            </div>
+          </div>
+
+          <div class="ios-grouped-section settings-form-card">
+            <el-form
+              ref="profileFormRef"
+              :model="profileForm"
+              :rules="profileRules"
+              label-position="top"
             >
-              更换头像
-            </el-button>
+              <el-form-item label="昵称" prop="nickname">
+                <el-input v-model="profileForm.nickname" maxlength="64" show-word-limit />
+              </el-form-item>
+              <el-form-item label="个性签名" prop="signature">
+                <el-input
+                  v-model="profileForm.signature"
+                  type="textarea"
+                  :rows="3"
+                  maxlength="255"
+                  show-word-limit
+                  placeholder="输入个性签名，留空保存可清除"
+                />
+              </el-form-item>
+              <div class="form-actions">
+                <el-button type="primary" :loading="profileSaving" @click="handleSaveProfile">
+                  保存资料
+                </el-button>
+              </div>
+            </el-form>
           </div>
         </div>
-
-        <el-form
-          ref="profileFormRef"
-          :model="profileForm"
-          :rules="profileRules"
-          label-position="top"
-        >
-          <el-form-item label="昵称" prop="nickname">
-            <el-input v-model="profileForm.nickname" maxlength="64" show-word-limit />
-          </el-form-item>
-          <el-form-item label="个性签名" prop="signature">
-            <el-input
-              v-model="profileForm.signature"
-              type="textarea"
-              :rows="3"
-              maxlength="255"
-              show-word-limit
-              placeholder="输入个性签名，留空保存可清除"
-            />
-          </el-form-item>
-          <div class="form-actions">
-            <el-button type="primary" :loading="profileSaving" @click="handleSaveProfile">
-              保存资料
-            </el-button>
-          </div>
-        </el-form>
       </el-tab-pane>
 
       <el-tab-pane name="security">
@@ -239,51 +246,54 @@ async function handleChangePassword() {
           </span>
         </template>
 
-        <el-alert
-          type="info"
-          :closable="false"
-          show-icon
-          title="修改密码后将自动撤销所有设备的活跃会话，需要重新登录。"
-          class="security-alert"
-        />
+        <div class="settings-stack">
+          <el-alert
+            type="info"
+            :closable="false"
+            show-icon
+            title="修改密码后将自动撤销所有设备的活跃会话，需要重新登录。"
+          />
 
-        <el-form
-          ref="passwordFormRef"
-          :model="passwordForm"
-          :rules="passwordRules"
-          label-position="top"
-        >
-          <el-form-item label="当前密码" prop="oldPassword">
-            <el-input
-              v-model="passwordForm.oldPassword"
-              type="password"
-              show-password
-              autocomplete="current-password"
-            />
-          </el-form-item>
-          <el-form-item label="新密码" prop="newPassword">
-            <el-input
-              v-model="passwordForm.newPassword"
-              type="password"
-              show-password
-              autocomplete="new-password"
-              placeholder="8–72 字节"
-            />
-          </el-form-item>
-          <el-form-item label="确认新密码" prop="confirmPassword">
-            <el-input
-              v-model="passwordForm.confirmPassword"
-              type="password"
-              show-password
-              autocomplete="new-password"
-            />
-          </el-form-item>
-          <div class="form-actions">
-            <el-button type="primary" :loading="passwordSaving" @click="handleChangePassword">
-              确认修改密码
-            </el-button>
+          <div class="ios-grouped-section settings-form-card">
+            <el-form
+              ref="passwordFormRef"
+              :model="passwordForm"
+              :rules="passwordRules"
+              label-position="top"
+            >
+              <el-form-item label="当前密码" prop="oldPassword">
+                <el-input
+                  v-model="passwordForm.oldPassword"
+                  type="password"
+                  show-password
+                  autocomplete="current-password"
+                />
+              </el-form-item>
+              <el-form-item label="新密码" prop="newPassword">
+                <el-input
+                  v-model="passwordForm.newPassword"
+                  type="password"
+                  show-password
+                  autocomplete="new-password"
+                  placeholder="8–72 字节"
+                />
+              </el-form-item>
+              <el-form-item label="确认新密码" prop="confirmPassword">
+                <el-input
+                  v-model="passwordForm.confirmPassword"
+                  type="password"
+                  show-password
+                  autocomplete="new-password"
+                />
+              </el-form-item>
+              <div class="form-actions">
+                <el-button type="primary" :loading="passwordSaving" @click="handleChangePassword">
+                  确认修改密码
+                </el-button>
+              </div>
+            </el-form>
           </div>
-        </el-form>
+        </div>
       </el-tab-pane>
     </el-tabs>
   </el-dialog>
@@ -296,13 +306,18 @@ async function handleChangePassword() {
   gap: 6px;
 }
 
+.settings-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
 .profile-head {
   display: flex;
   align-items: center;
   gap: 16px;
-  padding: 12px 0 20px;
-  margin-bottom: 16px;
-  border-bottom: 1px solid var(--im-border-light);
+  padding: 16px;
+  background-color: var(--im-bg-grouped);
 }
 
 .profile-head__meta {
@@ -319,22 +334,33 @@ async function handleChangePassword() {
 }
 
 .profile-head__username {
+  font-size: 17px;
   font-weight: 600;
   color: var(--im-text-primary);
 }
 
+.profile-head__role-pill {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  background-color: var(--im-accent-primary-soft);
+  color: var(--im-accent-primary);
+}
+
 .profile-head__sub {
   margin: 0;
-  font-size: 12px;
-  color: var(--im-text-muted);
+  font-size: 13px;
+  color: var(--im-text-secondary);
+}
+
+.settings-form-card {
+  padding: 16px;
+  background-color: var(--im-bg-grouped);
 }
 
 .hidden-file-input {
   display: none;
-}
-
-.security-alert {
-  margin-bottom: 16px;
 }
 
 .form-actions {

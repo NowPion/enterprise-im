@@ -73,7 +73,7 @@ watch(
 </script>
 
 <template>
-  <div class="audit-panel">
+  <div class="audit-panel ios-grouped-section">
     <div class="audit-toolbar">
       <el-date-picker
         v-model="dateRange"
@@ -84,7 +84,7 @@ watch(
         size="small"
         @change="refreshAudit"
       />
-      <el-button size="small" :icon="Refresh" :loading="loading" @click="refreshAudit">
+      <el-button size="small" type="primary" plain :icon="Refresh" :loading="loading" @click="refreshAudit">
         查询审计日志
       </el-button>
     </div>
@@ -130,10 +130,7 @@ watch(
 
 <style scoped>
 .audit-panel {
-  background-color: #ffffff;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  padding: 16px;
+  padding: 16px 18px;
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -155,18 +152,18 @@ watch(
 .role-hint {
   margin-left: 4px;
   font-size: 12px;
-  color: #6b7280;
+  color: var(--im-text-secondary);
 }
 
 .detail-text {
   font-size: 12px;
-  color: #4b5563;
+  color: var(--im-text-secondary);
   word-break: break-all;
 }
 
 .time-text {
   font-size: 12px;
-  color: #4b5563;
+  color: var(--im-text-secondary);
 }
 
 .load-more {

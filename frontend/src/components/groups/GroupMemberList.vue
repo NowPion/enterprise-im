@@ -113,7 +113,7 @@ async function handleRemove(member: GroupMember) {
 </script>
 
 <template>
-  <div class="member-panel">
+  <div class="member-panel ios-grouped-section">
     <div class="toolbar">
       <div class="filters">
         <el-input
@@ -165,6 +165,7 @@ async function handleRemove(member: GroupMember) {
               :src="row.avatar_url"
               :name="row.nickname_in_group || row.nickname"
               :size="32"
+              shape="circle"
             />
             <div class="member-names">
               <div class="primary-name">
@@ -208,6 +209,7 @@ async function handleRemove(member: GroupMember) {
             <el-button
               v-if="canChangeMemberRole(row)"
               link
+              type="primary"
               size="small"
               @click="handleToggleRole(row)"
             >
@@ -236,10 +238,7 @@ async function handleRemove(member: GroupMember) {
 
 <style scoped>
 .member-panel {
-  background-color: #ffffff;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  padding: 16px;
+  padding: 16px 18px;
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -288,49 +287,49 @@ async function handleRemove(member: GroupMember) {
 }
 
 .primary-name {
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 500;
-  color: #111827;
+  color: var(--im-text-primary);
   display: flex;
   align-items: center;
   gap: 6px;
 }
 
 .self-tag {
-  font-size: 11px;
-  padding: 0 5px;
-  border-radius: 3px;
-  background-color: #111827;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 9999px;
+  background-color: var(--im-accent-primary);
   color: #ffffff;
 }
 
 .sub-name {
   font-size: 12px;
-  color: #6b7280;
+  color: var(--im-text-secondary);
 }
 
 .role-badge {
   display: inline-block;
-  padding: 2px 8px;
-  border-radius: 4px;
+  padding: 2px 9px;
+  border-radius: 9999px;
   font-size: 12px;
-  font-weight: 500;
+  font-weight: 600;
 }
 
 .role-owner {
-  background-color: #111827;
+  background-color: var(--im-accent-primary);
   color: #ffffff;
 }
 
 .role-admin {
-  background-color: #eceef2;
-  color: #111827;
-  border: 1px solid #d1d5db;
+  background-color: var(--im-accent-primary-soft);
+  color: var(--im-accent-primary);
 }
 
 .role-member {
-  background-color: #f5f6f8;
-  color: #4b5563;
+  background-color: var(--im-bg-fill);
+  color: var(--im-text-secondary);
 }
 
 .online-cell {
@@ -338,7 +337,7 @@ async function handleRemove(member: GroupMember) {
   align-items: center;
   gap: 6px;
   font-size: 12px;
-  color: #4b5563;
+  color: var(--im-text-secondary);
 }
 
 .dot {
@@ -348,16 +347,16 @@ async function handleRemove(member: GroupMember) {
 }
 
 .dot.online {
-  background-color: #16a34a;
+  background-color: var(--im-status-online);
 }
 
 .dot.offline {
-  background-color: #9ca3af;
+  background-color: var(--im-status-offline);
 }
 
 .time-text {
   font-size: 12px;
-  color: #4b5563;
+  color: var(--im-text-secondary);
 }
 
 .row-ops {
@@ -367,7 +366,7 @@ async function handleRemove(member: GroupMember) {
 }
 
 .muted-op {
-  color: #9ca3af;
+  color: var(--im-text-muted);
   font-size: 12px;
 }
 

@@ -17,7 +17,7 @@ const props = withDefaults(
     size: 40,
     online: false,
     showOnline: false,
-    shape: 'square',
+    shape: 'circle',
   },
 )
 
@@ -32,7 +32,7 @@ const initialText = computed(() => {
 const boxStyle = computed(() => ({
   width: `${props.size}px`,
   height: `${props.size}px`,
-  borderRadius: props.shape === 'circle' ? '9999px' : '6px',
+  borderRadius: props.shape === 'circle' ? '9999px' : '11px',
   fontSize: `${Math.max(12, Math.round(props.size * 0.4))}px`,
 }))
 </script>
@@ -71,10 +71,9 @@ const boxStyle = computed(() => ({
   display: flex;
   align-items: center;
   justify-content: center;
-  background-color: #eceef2;
-  color: #374151;
+  background-color: #8e8e93;
+  color: #ffffff;
   font-weight: 600;
-  border: 1px solid #e5e7eb;
   user-select: none;
 }
 
@@ -91,19 +90,19 @@ const boxStyle = computed(() => ({
 
 .authorized-avatar__status {
   position: absolute;
-  right: -2px;
-  bottom: -2px;
-  width: 10px;
-  height: 10px;
+  right: -1px;
+  bottom: -1px;
+  width: 11px;
+  height: 11px;
   border-radius: 9999px;
-  border: 2px solid #ffffff;
+  border: 2px solid var(--im-bg-surface);
 }
 
 .authorized-avatar__status.is-online {
-  background-color: #10b981;
+  background-color: var(--im-status-online);
 }
 
 .authorized-avatar__status.is-offline {
-  background-color: #9ca3af;
+  background-color: var(--im-status-offline);
 }
 </style>

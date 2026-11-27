@@ -66,9 +66,9 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="overview-page">
-    <div class="header-bar">
+    <div class="header-bar ios-grouped-section">
       <div>
-        <h2 class="page-title">系统运行监控</h2>
+        <h2 class="page-title ios-large-title">系统运行监控</h2>
         <p class="page-sub">
           最近刷新：{{ formatUtcTimestamp(adminStore.monitoringLastUpdated) }}
         </p>
@@ -95,36 +95,36 @@ onBeforeUnmount(() => {
     />
 
     <section class="kpi-grid">
-      <div class="kpi-card">
+      <div class="kpi-card ios-grouped-section">
         <span class="kpi-label">在线用户数</span>
         <span class="kpi-value">{{ overview?.online_users ?? '—' }}</span>
       </div>
-      <div class="kpi-card">
+      <div class="kpi-card ios-grouped-section">
         <span class="kpi-label">WebSocket 连接数</span>
         <span class="kpi-value">{{ overview?.ws_connections ?? '—' }}</span>
       </div>
-      <div class="kpi-card">
+      <div class="kpi-card ios-grouped-section">
         <span class="kpi-label">消息吞吐 (条/分)</span>
         <span class="kpi-value">{{ overview?.messages_per_minute ?? '—' }}</span>
       </div>
-      <div class="kpi-card">
+      <div class="kpi-card ios-grouped-section">
         <span class="kpi-label">Streams Pending 积压</span>
         <span class="kpi-value">{{ streamPendingSummary }}</span>
       </div>
-      <div class="kpi-card">
+      <div class="kpi-card ios-grouped-section">
         <span class="kpi-label">Go Goroutines</span>
         <span class="kpi-value">{{ overview?.goroutines ?? '—' }}</span>
       </div>
-      <div class="kpi-card">
+      <div class="kpi-card ios-grouped-section">
         <span class="kpi-label">Go 堆内存 (Heap)</span>
         <span class="kpi-value">{{ formatBytes(overview?.heap_bytes) }}</span>
       </div>
     </section>
 
-    <section class="panel-card">
+    <section class="panel-card ios-grouped-section">
       <div class="card-title-row">
         <div class="title-with-icon">
-          <el-icon><Connection /></el-icon>
+          <el-icon class="title-icon"><Connection /></el-icon>
           <h3 class="card-title">核心依赖健康探活 (MySQL / Redis)</h3>
         </div>
       </div>
@@ -165,7 +165,7 @@ onBeforeUnmount(() => {
       </el-table>
     </section>
 
-    <section class="panel-card">
+    <section class="panel-card ios-grouped-section">
       <div class="card-title-row">
         <h3 class="card-title">Redis Streams 消费组与 Pending 积压</h3>
       </div>
@@ -206,10 +206,7 @@ onBeforeUnmount(() => {
 }
 
 .header-bar {
-  background-color: #ffffff;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  padding: 14px 20px;
+  padding: 16px 20px;
   display: flex;
   flex-wrap: wrap;
   justify-content: space-between;
@@ -218,16 +215,13 @@ onBeforeUnmount(() => {
 }
 
 .page-title {
-  margin: 0;
-  font-size: 16px;
-  font-weight: 600;
-  color: #111827;
+  font-size: 24px;
 }
 
 .page-sub {
   margin: 4px 0 0;
-  font-size: 12px;
-  color: #6b7280;
+  font-size: 13px;
+  color: var(--im-text-secondary);
 }
 
 .header-controls {
@@ -243,32 +237,26 @@ onBeforeUnmount(() => {
 }
 
 .kpi-card {
-  background-color: #ffffff;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  padding: 14px 16px;
+  padding: 16px 18px;
   display: flex;
   flex-direction: column;
   gap: 6px;
 }
 
 .kpi-label {
-  font-size: 12px;
-  color: #6b7280;
+  font-size: 13px;
+  color: var(--im-text-secondary);
 }
 
 .kpi-value {
-  font-size: 20px;
-  font-weight: 600;
-  color: #111827;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--im-text-primary);
+  font-variant-numeric: tabular-nums;
 }
 
 .panel-card {
-  background-color: #ffffff;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  padding: 16px 20px;
+  padding: 18px 20px;
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -286,11 +274,15 @@ onBeforeUnmount(() => {
   gap: 8px;
 }
 
+.title-icon {
+  color: var(--im-accent-primary);
+}
+
 .card-title {
   margin: 0;
-  font-size: 14px;
+  font-size: 16px;
   font-weight: 600;
-  color: #111827;
+  color: var(--im-text-primary);
 }
 
 .mono {
@@ -299,22 +291,22 @@ onBeforeUnmount(() => {
 }
 
 .status-ok {
-  color: #16a34a;
+  color: #248a3d;
   font-weight: 600;
 }
 
 .status-danger {
-  color: #dc2626;
+  color: var(--im-status-danger);
   font-weight: 600;
 }
 
 .time-text {
   font-size: 12px;
-  color: #4b5563;
+  color: var(--im-text-secondary);
 }
 
 .err-text {
   font-size: 12px;
-  color: #4b5563;
+  color: var(--im-text-secondary);
 }
 </style>

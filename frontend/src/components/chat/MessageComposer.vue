@@ -6,6 +6,7 @@ import {
   Microphone,
   Picture,
   Promotion,
+  Top,
   Upload,
 } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
@@ -60,8 +61,9 @@ let recordedChunks: BlobPart[] = []
 let recordingTimer: ReturnType<typeof setInterval> | undefined
 let cancelRecordingFlag = false
 
+const hasContent = computed(() => textInput.value.trim().length > 0)
 const canSubmitText = computed(
-  () => props.canSend && !uploading.value && textInput.value.trim().length > 0,
+  () => props.canSend && !uploading.value && hasContent.value,
 )
 
 function handleKeyDown(event: KeyboardEvent) {
@@ -292,45 +294,45 @@ onUnmounted(() => {
 
     <div class="composer__toolbar">
       <div class="composer__tools">
-        <el-button
-          text
-          size="small"
+        <button
+          type="button"
+          class="composer__tool-pill"
           :disabled="!canSend || uploading || recording"
-          :icon="Picture"
           @click="imageInputRef?.click()"
         >
-          图片
-        </el-button>
+          <el-icon :size="15"><Picture /></el-icon>
+          <span>图片</span>
+        </button>
 
-        <el-button
-          text
-          size="small"
+        <button
+          type="button"
+          class="composer__tool-pill"
           :disabled="!canSend || uploading || recording"
-          :icon="FolderOpened"
           @click="fileInputRef?.click()"
         >
-          文件
-        </el-button>
+          <el-icon :size="15"><FolderOpened /></el-icon>
+          <span>文件</span>
+        </button>
 
-        <el-button
-          text
-          size="small"
+        <button
+          type="button"
+          class="composer__tool-pill"
           :disabled="!canSend || uploading || recording"
-          :icon="Microphone"
           @click="startVoiceRecording"
         >
-          录制语音
-        </el-button>
+          <el-icon :size="15"><Microphone /></el-icon>
+          <span>录制语音</span>
+        </button>
 
-        <el-button
-          text
-          size="small"
+        <button
+          type="button"
+          class="composer__tool-pill"
           :disabled="!canSend || uploading || recording"
-          :icon="Upload"
           @click="voiceInputRef?.click()"
         >
-          音频文件
-        </el-button>
+          <el-icon :size="15"><Upload /></el-icon>
+          <span>音频文件</span>
+        </button>
       </div>
 
       <span v-if="!wsConnected" class="composer__offline-hint">
@@ -338,29 +340,28 @@ onUnmounted(() => {
       </span>
     </div>
 
-    <div class="composer__editor">
+    <div class="composer__pill" :class="{ 'is-disabled': !canSend }">
       <textarea
         v-model="textInput"
         class="composer__textarea"
         :disabled="!canSend"
-        :placeholder="canSend ? '输入消息内容，Enter 发送，Shift + Enter 换行' : '当前会话不可发送消息'"
-        rows="3"
+        :placeholder="canSend ? '信息 · Enter 发送，Shift + Enter 换行' : '当前会话不可发送消息'"
+        rows="1"
         @compositionstart="isComposing = true"
         @compositionend="isComposing = false"
         @keydown="handleKeyDown"
       />
-      <div class="composer__submit-row">
-        <span class="composer__tip">支持文本、图片、文件与语音消息</span>
-        <el-button
-          type="primary"
-          size="small"
-          :disabled="!canSubmitText"
-          :icon="Promotion"
-          @click="submitText"
-        >
-          发送
-        </el-button>
-      </div>
+      <button
+        v-if="hasContent"
+        type="button"
+        class="composer__send-btn"
+        :disabled="!canSubmitText"
+        aria-label="发送"
+        title="发送"
+        @click="submitText"
+      >
+        <el-icon :size="16"><Top /></el-icon>
+      </button>
     </div>
 
     <input
@@ -389,8 +390,10 @@ onUnmounted(() => {
 <style scoped>
 .composer {
   flex-shrink: 0;
-  background-color: #ffffff;
-  border-top: 1px solid #e5e7eb;
+  background-color: var(--im-bg-toolbar);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  border-top: 0.5px solid var(--im-separator);
   padding: 8px 16px 12px;
   display: flex;
   flex-direction: column;
@@ -398,12 +401,11 @@ onUnmounted(() => {
 }
 
 .composer__disabled-banner {
-  padding: 8px 12px;
-  border-radius: 6px;
-  background-color: #f5f6f8;
-  border: 1px solid #e5e7eb;
-  color: #4b5563;
-  font-size: 12px;
+  padding: 8px 14px;
+  border-radius: 12px;
+  background-color: var(--im-bg-fill);
+  color: var(--im-text-secondary);
+  font-size: 13px;
 }
 
 .composer__progress {
@@ -414,7 +416,7 @@ onUnmounted(() => {
 
 .composer__progress-name {
   font-size: 12px;
-  color: #4b5563;
+  color: var(--im-text-secondary);
 }
 
 .composer__recording-bar {
@@ -422,18 +424,17 @@ onUnmounted(() => {
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
-  border-radius: 6px;
-  background-color: #f5f6f8;
-  border: 1px solid #e5e7eb;
+  border-radius: 14px;
+  background-color: rgba(255, 59, 48, 0.08);
   font-size: 13px;
-  color: #111827;
+  color: var(--im-text-primary);
 }
 
 .composer__recording-dot {
   width: 8px;
   height: 8px;
   border-radius: 9999px;
-  background-color: #ef4444;
+  background-color: var(--im-status-danger);
 }
 
 .composer__recording-actions {
@@ -454,53 +455,110 @@ onUnmounted(() => {
 .composer__tools {
   display: flex;
   align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.composer__tool-pill {
+  display: inline-flex;
+  align-items: center;
   gap: 4px;
+  border: none;
+  background-color: var(--im-bg-fill);
+  color: var(--im-text-secondary);
+  padding: 4px 10px;
+  border-radius: 9999px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.14s ease, color 0.14s ease;
 }
 
-.composer__offline-hint {
-  font-size: 11px;
-  color: #6b7280;
+.composer__tool-pill:hover:not(:disabled) {
+  background-color: var(--im-accent-primary-soft);
+  color: var(--im-accent-primary);
 }
 
-.composer__editor {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.composer__textarea {
-  width: 100%;
-  resize: none;
-  border: 1px solid #e5e7eb;
-  border-radius: 6px;
-  padding: 8px 10px;
-  font-size: 14px;
-  line-height: 1.5;
-  color: #111827;
-  background-color: #ffffff;
-  font-family: inherit;
-  box-sizing: border-box;
-  outline: none;
-}
-
-.composer__textarea:focus {
-  border-color: #2563eb;
-}
-
-.composer__textarea:disabled {
-  background-color: #f5f6f8;
-  color: #9ca3af;
+.composer__tool-pill:disabled {
+  opacity: 0.45;
   cursor: not-allowed;
 }
 
-.composer__submit-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+.composer__offline-hint {
+  font-size: 12px;
+  color: var(--im-status-warning);
 }
 
-.composer__tip {
-  font-size: 11px;
-  color: #9ca3af;
+.composer__pill {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 6px 8px 6px 16px;
+  border-radius: 22px;
+  background-color: var(--im-bg-surface);
+  border: 0.5px solid var(--im-border-base);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.composer__pill:focus-within {
+  border-color: var(--im-accent-primary);
+  box-shadow: 0 0 0 2px rgba(0, 122, 255, 0.12);
+}
+
+.composer__pill.is-disabled {
+  background-color: var(--im-bg-fill);
+}
+
+.composer__textarea {
+  flex: 1;
+  min-height: 24px;
+  max-height: 112px;
+  resize: none;
+  border: none;
+  padding: 4px 0;
+  font-size: 15px;
+  line-height: 1.45;
+  color: var(--im-text-primary);
+  background: transparent;
+  font-family: inherit;
+  outline: none;
+}
+
+.composer__textarea::placeholder {
+  color: var(--im-text-muted);
+}
+
+.composer__textarea:disabled {
+  color: var(--im-text-muted);
+  cursor: not-allowed;
+}
+
+.composer__send-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 9999px;
+  border: none;
+  background-color: var(--im-accent-primary);
+  color: #ffffff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  cursor: pointer;
+  animation: ios-bubble-in 0.14s var(--im-ease-ios);
+  transition: background-color 0.14s ease, transform 0.12s ease;
+}
+
+.composer__send-btn:hover:not(:disabled) {
+  background-color: var(--im-accent-primary-hover);
+}
+
+.composer__send-btn:active:not(:disabled) {
+  transform: scale(0.92);
+}
+
+.composer__send-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 </style>

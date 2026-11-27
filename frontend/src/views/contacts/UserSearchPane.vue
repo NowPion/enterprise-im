@@ -127,46 +127,51 @@ function goToChat(userId: string) {
         :icon="Search"
       />
 
-      <div v-for="user in contactStore.searchResults" :key="user.id" class="user-card">
-        <div class="user-card__left">
-          <AppAvatar
-            :src="user.avatar_url"
-            :name="user.nickname || user.username"
-            :size="44"
-            :show-online="true"
-            :online="user.online"
-          />
-          <div class="user-card__info">
-            <div class="user-card__title">
-              <span class="user-card__nickname">{{ user.nickname }}</span>
-              <span class="user-card__username">@{{ user.username }}</span>
-              <el-tag size="small" :type="user.online ? 'success' : 'info'" effect="plain">
-                {{ user.online ? '在线' : '离线' }}
-              </el-tag>
+      <div v-else class="ios-grouped-section search-group">
+        <div v-for="user in contactStore.searchResults" :key="user.id" class="user-card">
+          <div class="user-card__left">
+            <AppAvatar
+              :src="user.avatar_url"
+              :name="user.nickname || user.username"
+              :size="46"
+              :show-online="true"
+              :online="user.online"
+              rounded="full"
+            />
+            <div class="user-card__info">
+              <div class="user-card__title">
+                <span class="user-card__nickname">{{ user.nickname }}</span>
+                <span class="user-card__username">@{{ user.username }}</span>
+                <el-tag size="small" :type="user.online ? 'success' : 'info'" effect="plain">
+                  {{ user.online ? '在线' : '离线' }}
+                </el-tag>
+              </div>
+              <p class="user-card__sig">{{ user.signature || '暂无个性签名' }}</p>
             </div>
-            <p class="user-card__sig">{{ user.signature || '暂无个性签名' }}</p>
           </div>
-        </div>
 
-        <div class="user-card__actions">
-          <el-tag v-if="user.id === authStore.user?.id" type="info" effect="plain">本人</el-tag>
-          <el-button
-            v-else-if="contactStore.friendIdsSet.has(user.id)"
-            size="small"
-            :icon="ChatDotRound"
-            @click="goToChat(user.id)"
-          >
-            发消息
-          </el-button>
-          <el-button
-            v-else
-            type="primary"
-            size="small"
-            :icon="Plus"
-            @click="openRequestDialog(user)"
-          >
-            添加好友
-          </el-button>
+          <div class="user-card__actions">
+            <el-tag v-if="user.id === authStore.user?.id" type="info" effect="plain">本人</el-tag>
+            <el-button
+              v-else-if="contactStore.friendIdsSet.has(user.id)"
+              type="primary"
+              plain
+              size="small"
+              :icon="ChatDotRound"
+              @click="goToChat(user.id)"
+            >
+              发消息
+            </el-button>
+            <el-button
+              v-else
+              type="primary"
+              size="small"
+              :icon="Plus"
+              @click="openRequestDialog(user)"
+            >
+              添加好友
+            </el-button>
+          </div>
         </div>
       </div>
 
@@ -183,11 +188,12 @@ function goToChat(userId: string) {
       width="420px"
       destroy-on-close
     >
-      <div v-if="targetUser" class="target-preview">
+      <div v-if="targetUser" class="target-preview ios-grouped-section">
         <AppAvatar
           :src="targetUser.avatar_url"
           :name="targetUser.nickname || targetUser.username"
-          :size="40"
+          :size="42"
+          rounded="full"
         />
         <div>
           <div class="target-preview__name">{{ targetUser.nickname }}</div>
@@ -227,8 +233,9 @@ function goToChat(userId: string) {
 }
 
 .search-pane__bar {
-  padding: 16px 24px;
-  border-bottom: 1px solid var(--im-border-light);
+  padding: 14px 24px;
+  border-bottom: 0.5px solid var(--im-border-light);
+  background-color: var(--im-bg-toolbar);
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
@@ -243,20 +250,35 @@ function goToChat(userId: string) {
 .search-pane__results {
   flex: 1;
   overflow-y: auto;
-  padding: 16px 24px;
+  padding: 18px 24px;
   display: flex;
   flex-direction: column;
   gap: 12px;
 }
 
+.search-group {
+  display: flex;
+  flex-direction: column;
+}
+
 .user-card {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  padding: 14px 16px;
-  border: 1px solid var(--im-border-base);
-  border-radius: var(--im-radius-md);
+  padding: 14px 18px;
+  background-color: var(--im-bg-surface);
+}
+
+.user-card + .user-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 76px;
+  right: 0;
+  height: 0.5px;
+  background-color: var(--im-border-light);
 }
 
 .user-card__left {
@@ -278,17 +300,18 @@ function goToChat(userId: string) {
 }
 
 .user-card__nickname {
+  font-size: 16px;
   font-weight: 600;
   color: var(--im-text-primary);
 }
 
 .user-card__username {
-  font-size: 12px;
-  color: var(--im-text-muted);
+  font-size: 13px;
+  color: var(--im-text-secondary);
 }
 
 .user-card__sig {
-  margin: 4px 0 0;
+  margin: 3px 0 0;
   font-size: 13px;
   color: var(--im-text-secondary);
   overflow: hidden;
@@ -310,19 +333,19 @@ function goToChat(userId: string) {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 12px;
+  padding: 12px 14px;
   margin-bottom: 16px;
-  background-color: var(--im-bg-page);
-  border-radius: var(--im-radius-md);
+  background-color: var(--im-bg-grouped);
 }
 
 .target-preview__name {
+  font-size: 16px;
   font-weight: 600;
   color: var(--im-text-primary);
 }
 
 .target-preview__sub {
-  font-size: 12px;
-  color: var(--im-text-muted);
+  font-size: 13px;
+  color: var(--im-text-secondary);
 }
 </style>

@@ -17,7 +17,7 @@ withDefaults(defineProps<Props>(), {
 <template>
   <div class="empty-state">
     <div class="empty-state__icon">
-      <el-icon :size="36">
+      <el-icon :size="32">
         <component :is="icon" />
       </el-icon>
     </div>
@@ -42,33 +42,32 @@ withDefaults(defineProps<Props>(), {
 }
 
 .empty-state__icon {
-  width: 64px;
-  height: 64px;
-  border-radius: 12px;
-  background-color: var(--im-bg-page);
-  border: 1px solid var(--im-border-light);
+  width: 68px;
+  height: 68px;
+  border-radius: 18px;
+  background-color: var(--im-bg-fill);
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--im-text-muted);
+  color: var(--im-accent-primary);
   margin-bottom: 16px;
 }
 
 .empty-state__title {
   margin: 0;
-  font-size: 15px;
+  font-size: 17px;
   font-weight: 600;
   color: var(--im-text-primary);
 }
 
 .empty-state__desc {
   margin: 6px 0 0;
-  font-size: 13px;
-  color: var(--im-text-muted);
+  font-size: 14px;
+  color: var(--im-text-secondary);
   max-width: 320px;
 }
 
 .empty-state__actions {
-  margin-top: 16px;
+  margin-top: 18px;
 }
 </style>

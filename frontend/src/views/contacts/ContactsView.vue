@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { ArrowLeft, Bell, Plus, Search, User } from '@element-plus/icons-vue'
+import { ArrowLeft, ArrowRight, Bell, Plus, Search, User } from '@element-plus/icons-vue'
 import AppAvatar from '@/components/common/AppAvatar.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
 import { useContactStore } from '@/stores/contact'
@@ -78,14 +78,15 @@ onMounted(() => {
   <div class="contacts-page" :class="{ 'is-mobile-detail': mobileShowDetail }">
     <aside class="contacts-list-pane">
       <div class="contacts-list-pane__header">
-        <h2 class="contacts-list-pane__title">联系人</h2>
-        <el-button size="small" :icon="Plus" @click="openSearch">添加好友</el-button>
+        <h2 class="contacts-list-pane__title ios-large-title">联系人</h2>
+        <el-button type="primary" plain size="small" :icon="Plus" @click="openSearch">
+          添加好友
+        </el-button>
       </div>
 
       <div class="contacts-list-pane__search">
         <el-input
           v-model="filterKeyword"
-          size="small"
           clearable
           placeholder="筛选好友昵称/备注/用户名"
           :prefix-icon="Search"
@@ -93,64 +94,72 @@ onMounted(() => {
       </div>
 
       <div class="contacts-list-pane__scroll" v-loading="contactStore.friendsLoading">
-        <button
-          type="button"
-          class="contact-entry contact-entry--special"
-          :class="{ 'is-active': paneMode === 'requests' }"
-          @click="openRequests"
-        >
-          <div class="contact-entry__icon">
-            <el-icon :size="18"><Bell /></el-icon>
-          </div>
-          <div class="contact-entry__body">
-            <span class="contact-entry__name">新的朋友 / 好友申请</span>
-          </div>
-          <span
-            v-if="contactStore.pendingReceivedCount > 0"
-            class="contact-entry__badge"
+        <div class="ios-grouped-section contacts-group">
+          <button
+            type="button"
+            class="contact-entry contact-entry--special"
+            :class="{ 'is-active': paneMode === 'requests' }"
+            @click="openRequests"
           >
-            {{ contactStore.pendingReceivedCount }}
-          </span>
-        </button>
+            <div class="contact-entry__icon">
+              <el-icon :size="18"><Bell /></el-icon>
+            </div>
+            <div class="contact-entry__body">
+              <span class="contact-entry__name">新的朋友 / 好友申请</span>
+            </div>
+            <span
+              v-if="contactStore.pendingReceivedCount > 0"
+              class="contact-entry__badge"
+            >
+              {{ contactStore.pendingReceivedCount }}
+            </span>
+            <el-icon class="contact-entry__chevron" :size="14"><ArrowRight /></el-icon>
+          </button>
+        </div>
 
-        <div class="contacts-section-label">
+        <div class="contacts-section-label ios-section-caption">
           我的好友（{{ contactStore.friends.length }}）
         </div>
 
-        <div v-if="filteredFriends.length === 0 && !contactStore.friendsLoading" class="contacts-empty">
+        <div v-if="filteredFriends.length === 0 && !contactStore.friendsLoading" class="ios-grouped-section contacts-empty">
           {{ filterKeyword ? '无匹配好友' : '暂无好友，点击上方「添加好友」' }}
         </div>
 
-        <button
-          v-for="friend in filteredFriends"
-          :key="friend.friend_id"
-          type="button"
-          class="contact-entry"
-          :class="{ 'is-active': paneMode === 'friend' && selectedFriendId === friend.friend_id }"
-          @click="selectFriend(friend.friend_id)"
-        >
-          <AppAvatar
-            :src="friend.user.avatar_url"
-            :name="friend.remark || friend.user.nickname"
-            :size="36"
-            :show-online="true"
-            :online="friend.online"
-          />
-          <div class="contact-entry__body">
-            <div class="contact-entry__top">
-              <span class="contact-entry__name">
-                {{ friend.remark || friend.user.nickname }}
-              </span>
+        <div v-else class="ios-grouped-section contacts-group">
+          <button
+            v-for="friend in filteredFriends"
+            :key="friend.friend_id"
+            type="button"
+            class="contact-entry"
+            :class="{ 'is-active': paneMode === 'friend' && selectedFriendId === friend.friend_id }"
+            @click="selectFriend(friend.friend_id)"
+          >
+            <AppAvatar
+              :src="friend.user.avatar_url"
+              :name="friend.remark || friend.user.nickname"
+              :size="40"
+              :show-online="true"
+              :online="friend.online"
+              rounded="full"
+            />
+            <div class="contact-entry__body">
+              <div class="contact-entry__top">
+                <span class="contact-entry__name">
+                  {{ friend.remark || friend.user.nickname }}
+                </span>
+              </div>
+              <p class="contact-entry__sub">
+                {{ friend.user.signature || `@${friend.user.username}` }}
+              </p>
             </div>
-            <p class="contact-entry__sub">
-              {{ friend.user.signature || `@${friend.user.username}` }}
-            </p>
-          </div>
-        </button>
+            <el-icon class="contact-entry__chevron" :size="14"><ArrowRight /></el-icon>
+          </button>
+        </div>
 
         <div v-if="contactStore.friendsHasMore" class="contacts-load-more">
           <el-button
             text
+            type="primary"
             size="small"
             :loading="contactStore.friendsLoading"
             @click="contactStore.fetchFriends(false)"
@@ -165,10 +174,10 @@ onMounted(() => {
       <header class="contacts-detail-pane__header">
         <button
           type="button"
-          class="mobile-back-btn"
+          class="mobile-back-btn ios-chevron-back"
           @click="mobileShowDetail = false"
         >
-          <el-icon><ArrowLeft /></el-icon>
+          <el-icon :size="18"><ArrowLeft /></el-icon>
           <span>返回</span>
         </button>
         <h3 class="contacts-detail-pane__title">{{ rightTitle }}</h3>
@@ -199,75 +208,88 @@ onMounted(() => {
   width: 100%;
   height: 100%;
   min-height: 0;
+  background-color: var(--im-bg-grouped);
 }
 
 .contacts-list-pane {
   width: var(--im-list-width);
   flex-shrink: 0;
-  background-color: var(--im-bg-sidebar);
-  border-right: 1px solid var(--im-border-base);
+  background-color: var(--im-bg-grouped);
+  border-right: 0.5px solid var(--im-separator);
   display: flex;
   flex-direction: column;
   min-height: 0;
 }
 
 .contacts-list-pane__header {
-  height: var(--im-header-height);
-  padding: 0 16px;
+  padding: 16px 14px 10px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  border-bottom: 1px solid var(--im-border-light);
+  background-color: var(--im-bg-sidebar);
+  backdrop-filter: blur(18px);
 }
 
 .contacts-list-pane__title {
-  margin: 0;
-  font-size: 16px;
-  font-weight: 600;
-  color: var(--im-text-primary);
+  font-size: 26px;
 }
 
 .contacts-list-pane__search {
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--im-border-light);
+  padding: 0 14px 12px;
+  background-color: var(--im-bg-sidebar);
 }
 
 .contacts-list-pane__scroll {
   flex: 1;
   overflow-y: auto;
-  padding: 8px;
+  padding: 2px 12px 16px;
+}
+
+.contacts-group {
+  margin-bottom: 4px;
 }
 
 .contacts-section-label {
-  padding: 12px 8px 6px;
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--im-text-muted);
+  padding: 14px 6px 6px;
 }
 
 .contacts-empty {
-  padding: 20px 12px;
+  padding: 24px 14px;
   text-align: center;
-  font-size: 12px;
-  color: var(--im-text-muted);
+  font-size: 13px;
+  color: var(--im-text-secondary);
 }
 
 .contact-entry {
+  position: relative;
   width: 100%;
   border: none;
-  background: transparent;
-  padding: 10px;
-  border-radius: var(--im-radius-md);
+  background: var(--im-bg-surface);
+  padding: 10px 12px;
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 11px;
   text-align: left;
   cursor: pointer;
-  transition: background-color 0.12s ease;
+  transition: background-color 0.14s var(--im-ease-ios);
+}
+
+.contact-entry + .contact-entry::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 63px;
+  right: 0;
+  height: 0.5px;
+  background-color: var(--im-border-light);
 }
 
 .contact-entry:hover {
   background-color: var(--im-bg-hover);
+}
+
+.contact-entry:active {
+  background-color: rgba(120, 120, 128, 0.18);
 }
 
 .contact-entry.is-active {
@@ -275,11 +297,11 @@ onMounted(() => {
 }
 
 .contact-entry__icon {
-  width: 36px;
-  height: 36px;
-  border-radius: 8px;
-  background-color: var(--im-bg-rail);
-  color: var(--im-text-inverse);
+  width: 40px;
+  height: 40px;
+  border-radius: 11px;
+  background-color: var(--im-status-warning);
+  color: #ffffff;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -298,7 +320,7 @@ onMounted(() => {
 }
 
 .contact-entry__name {
-  font-size: 14px;
+  font-size: 16px;
   font-weight: 500;
   color: var(--im-text-primary);
   overflow: hidden;
@@ -309,30 +331,35 @@ onMounted(() => {
 
 .contact-entry__sub {
   margin: 2px 0 0;
-  font-size: 12px;
-  color: var(--im-text-muted);
+  font-size: 13px;
+  color: var(--im-text-secondary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .contact-entry__badge {
-  min-width: 18px;
-  height: 18px;
-  padding: 0 5px;
+  min-width: 19px;
+  height: 19px;
+  padding: 0 6px;
   border-radius: 9999px;
   background-color: var(--im-status-unread);
   color: #ffffff;
   font-size: 11px;
   font-weight: 600;
-  line-height: 18px;
+  line-height: 19px;
   text-align: center;
+}
+
+.contact-entry__chevron {
+  color: var(--im-text-tertiary);
+  flex-shrink: 0;
 }
 
 .contacts-load-more {
   display: flex;
   justify-content: center;
-  padding: 8px 0;
+  padding: 10px 0;
 }
 
 .contacts-detail-pane {
@@ -341,22 +368,25 @@ onMounted(() => {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  background-color: var(--im-bg-surface);
+  background-color: var(--im-bg-grouped);
 }
 
 .contacts-detail-pane__header {
-  height: var(--im-header-height);
+  height: 58px;
   padding: 0 24px;
   display: flex;
   align-items: center;
   gap: 12px;
-  border-bottom: 1px solid var(--im-border-light);
+  background-color: var(--im-bg-toolbar);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  border-bottom: 0.5px solid var(--im-separator);
   flex-shrink: 0;
 }
 
 .contacts-detail-pane__title {
   margin: 0;
-  font-size: 16px;
+  font-size: 17px;
   font-weight: 600;
   color: var(--im-text-primary);
 }
@@ -370,19 +400,6 @@ onMounted(() => {
 
 .mobile-back-btn {
   display: none;
-  border: none;
-  background: transparent;
-  padding: 4px 8px;
-  border-radius: 6px;
-  align-items: center;
-  gap: 4px;
-  font-size: 13px;
-  color: var(--im-text-secondary);
-  cursor: pointer;
-}
-
-.mobile-back-btn:hover {
-  background-color: var(--im-bg-hover);
 }
 
 @media (max-width: 767px) {

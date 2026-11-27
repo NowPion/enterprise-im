@@ -1,61 +1,103 @@
 :root {
-  /* Core Enterprise Monochrome Palette */
-  --im-bg-page: #f5f6f8;
+  /* iOS / iPadOS Light Semantic Palette */
+  --im-bg-page: #f2f2f7;
+  --im-bg-grouped: #f2f2f7;
   --im-bg-surface: #ffffff;
-  --im-bg-sidebar: #f5f6f8;
-  --im-bg-rail: #111827;
-  --im-bg-hover: #eceef2;
-  --im-bg-active: #e5e7eb;
-  --im-bg-subtle: #f9fafb;
+  --im-bg-elevated: #ffffff;
+  --im-bg-sidebar: rgba(242, 242, 247, 0.88);
+  --im-bg-toolbar: rgba(249, 249, 251, 0.84);
+  --im-bg-rail: rgba(242, 242, 247, 0.9);
+  --im-bg-fill: rgba(120, 120, 128, 0.12);
+  --im-bg-fill-secondary: rgba(120, 120, 128, 0.16);
+  --im-bg-hover: rgba(120, 120, 128, 0.1);
+  --im-bg-active: rgba(0, 122, 255, 0.14);
+  --im-bg-subtle: #f9f9fb;
 
-  /* Typography */
-  --im-text-primary: #111827;
-  --im-text-secondary: #4b5563;
-  --im-text-muted: #6b7280;
+  /* Chat Bubbles */
+  --im-bubble-self: #007aff;
+  --im-bubble-self-text: #ffffff;
+  --im-bubble-peer: #e5e5ea;
+  --im-bubble-peer-text: #000000;
+
+  /* iOS Typography */
+  --im-font-sans: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'SF Pro Display',
+    'PingFang SC', 'Hiragino Sans GB', system-ui, sans-serif;
+  --im-text-primary: #000000;
+  --im-text-secondary: rgba(60, 60, 67, 0.6);
+  --im-text-muted: rgba(60, 60, 67, 0.45);
+  --im-text-tertiary: rgba(60, 60, 67, 0.3);
   --im-text-inverse: #ffffff;
 
-  /* Borders */
-  --im-border-light: #eceef2;
-  --im-border-base: #e5e7eb;
-  --im-border-strong: #d1d5db;
+  /* Hairline Separators & Borders */
+  --im-separator: #c6c6c8;
+  --im-separator-opaque: #c6c6c8;
+  --im-border-light: rgba(60, 60, 67, 0.14);
+  --im-border-base: rgba(60, 60, 67, 0.22);
+  --im-border-strong: #c6c6c8;
 
-  /* Minimal Semantic Accents */
-  --im-accent-primary: #2563eb;
-  --im-accent-primary-hover: #1d4ed8;
-  --im-accent-primary-soft: #eff6ff;
-  --im-status-online: #10b981;
-  --im-status-offline: #9ca3af;
-  --im-status-unread: #ef4444;
-  --im-status-warning: #d97706;
+  /* iOS System Accents */
+  --im-accent-primary: #007aff;
+  --im-accent-primary-hover: #0066d6;
+  --im-accent-primary-soft: rgba(0, 122, 255, 0.12);
+  --im-status-online: #34c759;
+  --im-status-offline: #8e8e93;
+  --im-status-unread: #007aff;
+  --im-status-danger: #ff3b30;
+  --im-status-warning: #ff9500;
 
-  /* Layout Dimensions */
-  --im-rail-width: 64px;
-  --im-list-width: 300px;
-  --im-header-height: 60px;
+  /* Layout Dimensions (Desktop 3-Column Preserved) */
+  --im-rail-width: 72px;
+  --im-list-width: 312px;
+  --im-header-height: 56px;
 
-  /* Radius & Elevation */
-  --im-radius-sm: 4px;
-  --im-radius-md: 8px;
-  --im-radius-lg: 12px;
-  --im-shadow-sm: 0 1px 2px rgba(17, 24, 39, 0.05);
-  --im-shadow-md: 0 4px 16px rgba(17, 24, 39, 0.08);
+  /* iOS Radii & Restrained Elevation */
+  --im-radius-sm: 8px;
+  --im-radius-md: 10px;
+  --im-radius-lg: 14px;
+  --im-radius-xl: 16px;
+  --im-radius-bubble: 18px;
+  --im-radius-pill: 9999px;
+  --im-shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.06);
+  --im-shadow-md: 0 8px 28px rgba(0, 0, 0, 0.12);
+  --im-shadow-sheet: 0 12px 36px rgba(0, 0, 0, 0.14);
 
-  /* Element Plus Theme Alignment */
-  --el-color-primary: #111827;
-  --el-color-primary-light-3: #374151;
-  --el-color-primary-light-5: #4b5563;
-  --el-color-primary-light-7: #9ca3af;
-  --el-color-primary-light-8: #d1d5db;
-  --el-color-primary-light-9: #f3f4f6;
-  --el-color-primary-dark-2: #030712;
-  --el-color-success: #10b981;
-  --el-color-danger: #ef4444;
-  --el-color-warning: #d97706;
-  --el-border-color: #e5e7eb;
-  --el-border-color-light: #eceef2;
+  /* Motion */
+  --im-ease-ios: cubic-bezier(0.32, 0.72, 0, 1);
+
+  /* Element Plus Theme Alignment (iOS System Blue & Grouped Surfaces) */
+  --el-color-primary: #007aff;
+  --el-color-primary-light-3: #4da3ff;
+  --el-color-primary-light-5: #80bdff;
+  --el-color-primary-light-7: #b3d7ff;
+  --el-color-primary-light-8: #cce5ff;
+  --el-color-primary-light-9: #e6f2ff;
+  --el-color-primary-dark-2: #005ec4;
+  --el-color-success: #34c759;
+  --el-color-success-light-9: rgba(52, 199, 89, 0.12);
+  --el-color-danger: #ff3b30;
+  --el-color-danger-light-9: rgba(255, 59, 48, 0.12);
+  --el-color-warning: #ff9500;
+  --el-color-warning-light-9: rgba(255, 149, 0, 0.12);
+  --el-color-info: #8e8e93;
+  --el-color-info-light-9: rgba(142, 142, 147, 0.12);
+  --el-border-color: rgba(60, 60, 67, 0.18);
+  --el-border-color-light: rgba(60, 60, 67, 0.12);
+  --el-border-color-lighter: rgba(60, 60, 67, 0.08);
   --el-bg-color: #ffffff;
-  --el-text-color-primary: #111827;
-  --el-text-color-regular: #4b5563;
-  --el-text-color-secondary: #6b7280;
-  --el-border-radius-base: 6px;
+  --el-bg-color-page: #f2f2f7;
+  --el-bg-color-overlay: #ffffff;
+  --el-fill-color-blank: #ffffff;
+  --el-fill-color-light: #f2f2f7;
+  --el-fill-color-lighter: #f9f9fb;
+  --el-text-color-primary: #000000;
+  --el-text-color-regular: rgba(60, 60, 67, 0.85);
+  --el-text-color-secondary: rgba(60, 60, 67, 0.6);
+  --el-text-color-placeholder: rgba(60, 60, 67, 0.35);
+  --el-border-radius-base: 10px;
+  --el-border-radius-small: 8px;
+  --el-border-radius-round: 9999px;
+  --el-font-family: var(--im-font-sans);
+  --el-font-size-base: 15px;
+  --el-box-shadow-light: var(--im-shadow-sm);
+  --el-box-shadow: var(--im-shadow-md);
 }

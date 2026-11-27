@@ -49,7 +49,7 @@ async function handleForceDisband() {
   >
     <div v-loading="loading" class="drawer-body">
       <template v-if="detail">
-        <section class="info-section">
+        <section class="info-section ios-grouped-section">
           <div class="sec-header">
             <h4 class="sec-title">群基础属性</h4>
             <el-button
@@ -93,7 +93,7 @@ async function handleForceDisband() {
           </el-descriptions>
         </section>
 
-        <section class="info-section">
+        <section class="info-section ios-grouped-section">
           <h4 class="sec-title">群成员 ({{ detail.members.length }})</h4>
           <el-table :data="detail.members" border size="small" empty-text="暂无成员记录">
             <el-table-column prop="user_id" label="User ID" width="110" />
@@ -115,7 +115,7 @@ async function handleForceDisband() {
           </el-table>
         </section>
 
-        <section class="info-section">
+        <section class="info-section ios-grouped-section">
           <h4 class="sec-title">系统事件摘要</h4>
           <el-table
             :data="detail.system_events"
@@ -142,13 +142,14 @@ async function handleForceDisband() {
 .drawer-body {
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: 16px;
 }
 
 .info-section {
+  padding: 16px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
 }
 
 .sec-header {
@@ -159,9 +160,9 @@ async function handleForceDisband() {
 
 .sec-title {
   margin: 0;
-  font-size: 13px;
+  font-size: 15px;
   font-weight: 600;
-  color: #111827;
+  color: var(--im-text-primary);
 }
 
 .mono {
@@ -169,21 +170,21 @@ async function handleForceDisband() {
 }
 
 .status-ok {
-  color: #16a34a;
-  font-weight: 500;
+  color: #248a3d;
+  font-weight: 600;
 }
 
 .status-danger {
-  color: #dc2626;
-  font-weight: 500;
+  color: var(--im-status-danger);
+  font-weight: 600;
 }
 
 .status-muted {
-  color: #9ca3af;
+  color: var(--im-text-muted);
 }
 
 .time-text {
   font-size: 12px;
-  color: #4b5563;
+  color: var(--im-text-secondary);
 }
 </style>
