@@ -129,64 +129,131 @@ onMounted(() => {
         <el-button @click="handleReset">重置</el-button>
       </div>
 
-      <el-table
-        v-loading="adminStore.groupsLoading"
-        :data="adminStore.groups"
-        border
-        size="small"
-        empty-text="暂无符合条件的群聊"
-      >
-        <el-table-column prop="id" label="群 ID" width="100" />
-        <el-table-column prop="conversation_id" label="会话 ID" width="100" />
-        <el-table-column prop="name" label="群名称" min-width="160" />
-        <el-table-column label="群主" min-width="130">
-          <template #default="{ row }">
-            <span>{{ row.owner?.nickname || `ID ${row.owner_id}` }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="成员数" width="100" align="right">
-          <template #default="{ row }">
-            <span>{{ row.member_count }} / {{ row.max_members }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column prop="last_seq" label="末序号" width="90" align="right" />
-        <el-table-column label="状态" width="90">
-          <template #default="{ row }">
-            <span :class="row.status === 'active' ? 'status-ok' : 'status-danger'">
-              {{ row.status === 'active' ? '正常' : '已解散' }}
-            </span>
-          </template>
-        </el-table-column>
-        <el-table-column label="创建时间" width="165">
-          <template #default="{ row }">
-            <span class="time-text">{{ formatUtcTimestamp(row.created_at) }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="操作" width="210" fixed="right">
-          <template #default="{ row }">
-            <div class="row-actions">
-              <el-button link type="primary" size="small" @click="openDetail(row)">详情</el-button>
-              <el-button
-                link
-                type="primary"
-                size="small"
-                @click="jumpToMessageAudit(row.conversation_id)"
-              >
-                消息审计
-              </el-button>
-              <el-button
-                v-if="row.status === 'active'"
-                link
-                type="danger"
-                size="small"
-                @click="handleForceDisband(row)"
-              >
-                强制解散
-              </el-button>
+      <div class="admin-table-desktop">
+        <el-table
+          v-loading="adminStore.groupsLoading"
+          :data="adminStore.groups"
+          border
+          size="small"
+          empty-text="暂无符合条件的群聊"
+        >
+          <el-table-column prop="id" label="群 ID" width="100" />
+          <el-table-column prop="conversation_id" label="会话 ID" width="100" />
+          <el-table-column prop="name" label="群名称" min-width="160" />
+          <el-table-column label="群主" min-width="130">
+            <template #default="{ row }">
+              <span>{{ row.owner?.nickname || `ID ${row.owner_id}` }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="成员数" width="100" align="right">
+            <template #default="{ row }">
+              <span>{{ row.member_count }} / {{ row.max_members }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column prop="last_seq" label="末序号" width="90" align="right" />
+          <el-table-column label="状态" width="90">
+            <template #default="{ row }">
+              <span :class="row.status === 'active' ? 'status-ok' : 'status-danger'">
+                {{ row.status === 'active' ? '正常' : '已解散' }}
+              </span>
+            </template>
+          </el-table-column>
+          <el-table-column label="创建时间" width="165">
+            <template #default="{ row }">
+              <span class="time-text">{{ formatUtcTimestamp(row.created_at) }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="操作" width="210" fixed="right">
+            <template #default="{ row }">
+              <div class="row-actions">
+                <el-button link type="primary" size="small" @click="openDetail(row)">详情</el-button>
+                <el-button
+                  link
+                  type="primary"
+                  size="small"
+                  @click="jumpToMessageAudit(row.conversation_id)"
+                >
+                  消息审计
+                </el-button>
+                <el-button
+                  v-if="row.status === 'active'"
+                  link
+                  type="danger"
+                  size="small"
+                  @click="handleForceDisband(row)"
+                >
+                  强制解散
+                </el-button>
+              </div>
+            </template>
+          </el-table-column>
+        </el-table>
+      </div>
+
+      <div v-loading="adminStore.groupsLoading" class="admin-cards-mobile">
+        <div v-if="adminStore.groups.length === 0 && !adminStore.groupsLoading" class="admin-mobile-empty">
+          暂无符合条件的群聊
+        </div>
+        <article v-for="row in adminStore.groups" :key="row.id" class="admin-mobile-card">
+          <div class="admin-mobile-card__head">
+            <div class="admin-mobile-card__title-wrap">
+              <div class="admin-mobile-card__title">{{ row.name }}</div>
+              <div class="admin-mobile-card__sub">
+                群 ID {{ row.id }} · 会话 ID {{ row.conversation_id }}
+              </div>
             </div>
-          </template>
-        </el-table-column>
-      </el-table>
+            <div class="admin-mobile-card__badges">
+              <span :class="row.status === 'active' ? 'status-ok' : 'status-danger'" class="status-chip">
+                {{ row.status === 'active' ? '正常' : '已解散' }}
+              </span>
+            </div>
+          </div>
+
+          <div class="admin-mobile-card__grid">
+            <div class="admin-mobile-kv">
+              <span class="admin-mobile-kv__label">群主</span>
+              <span class="admin-mobile-kv__value">
+                {{ row.owner?.nickname || `ID ${row.owner_id}` }}
+              </span>
+            </div>
+            <div class="admin-mobile-kv">
+              <span class="admin-mobile-kv__label">成员数</span>
+              <span class="admin-mobile-kv__value">{{ row.member_count }} / {{ row.max_members }}</span>
+            </div>
+            <div class="admin-mobile-kv">
+              <span class="admin-mobile-kv__label">末序号</span>
+              <span class="admin-mobile-kv__value">{{ row.last_seq }}</span>
+            </div>
+            <div class="admin-mobile-kv">
+              <span class="admin-mobile-kv__label">创建时间</span>
+              <span class="admin-mobile-kv__value time-text">
+                {{ formatUtcTimestamp(row.created_at) }}
+              </span>
+            </div>
+          </div>
+
+          <div class="admin-mobile-card__actions">
+            <el-button link type="primary" size="small" @click="openDetail(row)">详情</el-button>
+            <el-button
+              link
+              type="primary"
+              size="small"
+              @click="jumpToMessageAudit(row.conversation_id)"
+            >
+              消息审计
+            </el-button>
+            <el-button
+              v-if="row.status === 'active'"
+              link
+              type="danger"
+              size="small"
+              @click="handleForceDisband(row)"
+            >
+              强制解散
+            </el-button>
+          </div>
+        </article>
+      </div>
 
       <div v-if="adminStore.groupsHasMore" class="load-more">
         <el-button :loading="adminStore.groupsLoading" @click="handleLoadMore">加载更多</el-button>
@@ -271,5 +338,20 @@ onMounted(() => {
 .load-more {
   display: flex;
   justify-content: center;
+}
+
+.status-chip {
+  font-size: 12px;
+}
+
+@media (max-width: 768px) {
+  .panel-card {
+    padding: 14px;
+  }
+
+  .query-input,
+  .filter-select {
+    width: 100%;
+  }
 }
 </style>

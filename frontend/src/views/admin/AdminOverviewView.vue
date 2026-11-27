@@ -129,40 +129,83 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-      <el-table
-        v-loading="adminStore.monitoringLoading"
-        :data="dependencyRows"
-        border
-        size="small"
-        empty-text="暂无依赖健康数据"
-      >
-        <el-table-column prop="name" label="组件" width="120" />
-        <el-table-column label="状态" width="120">
-          <template #default="{ row }">
-            <span :class="row.status === 'ok' ? 'status-ok' : 'status-danger'">
-              {{ row.status }}
-            </span>
-          </template>
-        </el-table-column>
-        <el-table-column label="探测延迟" width="120" align="right">
-          <template #default="{ row }">
-            <span class="mono">
-              {{ row.latency_ms !== null && row.latency_ms !== undefined ? `${row.latency_ms} ms` : '—' }}
-            </span>
-          </template>
-        </el-table-column>
-        <el-table-column prop="version" label="服务端版本" width="160" />
-        <el-table-column label="最近错误时间" width="180">
-          <template #default="{ row }">
-            <span class="time-text">{{ formatUtcTimestamp(row.last_error_at) }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="最近错误摘要" min-width="200">
-          <template #default="{ row }">
-            <span class="err-text">{{ row.last_error || '—' }}</span>
-          </template>
-        </el-table-column>
-      </el-table>
+      <div class="admin-table-desktop">
+        <el-table
+          v-loading="adminStore.monitoringLoading"
+          :data="dependencyRows"
+          border
+          size="small"
+          empty-text="暂无依赖健康数据"
+        >
+          <el-table-column prop="name" label="组件" width="120" />
+          <el-table-column label="状态" width="120">
+            <template #default="{ row }">
+              <span :class="row.status === 'ok' ? 'status-ok' : 'status-danger'">
+                {{ row.status }}
+              </span>
+            </template>
+          </el-table-column>
+          <el-table-column label="探测延迟" width="120" align="right">
+            <template #default="{ row }">
+              <span class="mono">
+                {{ row.latency_ms !== null && row.latency_ms !== undefined ? `${row.latency_ms} ms` : '—' }}
+              </span>
+            </template>
+          </el-table-column>
+          <el-table-column prop="version" label="服务端版本" width="160" />
+          <el-table-column label="最近错误时间" width="180">
+            <template #default="{ row }">
+              <span class="time-text">{{ formatUtcTimestamp(row.last_error_at) }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="最近错误摘要" min-width="200">
+            <template #default="{ row }">
+              <span class="err-text">{{ row.last_error || '—' }}</span>
+            </template>
+          </el-table-column>
+        </el-table>
+      </div>
+
+      <div v-loading="adminStore.monitoringLoading" class="admin-cards-mobile">
+        <div
+          v-if="dependencyRows.length === 0 && !adminStore.monitoringLoading"
+          class="admin-mobile-empty"
+        >
+          暂无依赖健康数据
+        </div>
+        <article v-for="row in dependencyRows" :key="row.name" class="admin-mobile-card">
+          <div class="admin-mobile-card__head">
+            <div class="admin-mobile-card__title-wrap">
+              <div class="admin-mobile-card__title">{{ row.name }}</div>
+              <div class="admin-mobile-card__sub">版本：{{ row.version || '—' }}</div>
+            </div>
+            <div class="admin-mobile-card__badges">
+              <span :class="row.status === 'ok' ? 'status-ok' : 'status-danger'" class="status-chip">
+                {{ row.status }}
+              </span>
+            </div>
+          </div>
+
+          <div class="admin-mobile-card__grid">
+            <div class="admin-mobile-kv">
+              <span class="admin-mobile-kv__label">探测延迟</span>
+              <span class="admin-mobile-kv__value mono">
+                {{ row.latency_ms !== null && row.latency_ms !== undefined ? `${row.latency_ms} ms` : '—' }}
+              </span>
+            </div>
+            <div class="admin-mobile-kv">
+              <span class="admin-mobile-kv__label">最近错误时间</span>
+              <span class="admin-mobile-kv__value time-text">
+                {{ formatUtcTimestamp(row.last_error_at) }}
+              </span>
+            </div>
+            <div class="admin-mobile-kv admin-mobile-kv--full">
+              <span class="admin-mobile-kv__label">最近错误摘要</span>
+              <span class="admin-mobile-kv__value err-text">{{ row.last_error || '—' }}</span>
+            </div>
+          </div>
+        </article>
+      </div>
     </section>
 
     <section class="panel-card ios-grouped-section">
@@ -170,30 +213,71 @@ onBeforeUnmount(() => {
         <h3 class="card-title">Redis Streams 消费组与 Pending 积压</h3>
       </div>
 
-      <el-table
-        v-loading="adminStore.monitoringLoading"
-        :data="adminStore.streamMetrics"
-        border
-        size="small"
-        empty-text="暂无 Stream 消费组数据"
-      >
-        <el-table-column prop="stream" label="Stream Key" min-width="180" />
-        <el-table-column prop="group" label="Consumer Group" min-width="160" />
-        <el-table-column prop="consumer" label="Consumer" min-width="160" />
-        <el-table-column prop="last_delivered_id" label="last_delivered_id" min-width="170" />
-        <el-table-column label="Pending 数" width="110" align="right">
-          <template #default="{ row }">
-            <span class="mono" :class="row.pending_count > 0 ? 'status-danger' : 'status-ok'">
-              {{ row.pending_count }}
-            </span>
-          </template>
-        </el-table-column>
-        <el-table-column label="最长未确认耗时" width="150" align="right">
-          <template #default="{ row }">
-            <span class="mono">{{ formatPendingAge(row.oldest_pending_age) }}</span>
-          </template>
-        </el-table-column>
-      </el-table>
+      <div class="admin-table-desktop">
+        <el-table
+          v-loading="adminStore.monitoringLoading"
+          :data="adminStore.streamMetrics"
+          border
+          size="small"
+          empty-text="暂无 Stream 消费组数据"
+        >
+          <el-table-column prop="stream" label="Stream Key" min-width="180" />
+          <el-table-column prop="group" label="Consumer Group" min-width="160" />
+          <el-table-column prop="consumer" label="Consumer" min-width="160" />
+          <el-table-column prop="last_delivered_id" label="last_delivered_id" min-width="170" />
+          <el-table-column label="Pending 数" width="110" align="right">
+            <template #default="{ row }">
+              <span class="mono" :class="row.pending_count > 0 ? 'status-danger' : 'status-ok'">
+                {{ row.pending_count }}
+              </span>
+            </template>
+          </el-table-column>
+          <el-table-column label="最长未确认耗时" width="150" align="right">
+            <template #default="{ row }">
+              <span class="mono">{{ formatPendingAge(row.oldest_pending_age) }}</span>
+            </template>
+          </el-table-column>
+        </el-table>
+      </div>
+
+      <div v-loading="adminStore.monitoringLoading" class="admin-cards-mobile">
+        <div
+          v-if="adminStore.streamMetrics.length === 0 && !adminStore.monitoringLoading"
+          class="admin-mobile-empty"
+        >
+          暂无 Stream 消费组数据
+        </div>
+        <article
+          v-for="row in adminStore.streamMetrics"
+          :key="`${row.stream}-${row.group}-${row.consumer}`"
+          class="admin-mobile-card"
+        >
+          <div class="admin-mobile-card__head">
+            <div class="admin-mobile-card__title-wrap">
+              <div class="admin-mobile-card__title mono">{{ row.stream }}</div>
+              <div class="admin-mobile-card__sub">{{ row.group }} / {{ row.consumer }}</div>
+            </div>
+            <div class="admin-mobile-card__badges">
+              <span class="mono" :class="row.pending_count > 0 ? 'status-danger' : 'status-ok'">
+                Pending: {{ row.pending_count }}
+              </span>
+            </div>
+          </div>
+
+          <div class="admin-mobile-card__grid">
+            <div class="admin-mobile-kv admin-mobile-kv--full">
+              <span class="admin-mobile-kv__label">last_delivered_id</span>
+              <span class="admin-mobile-kv__value mono">{{ row.last_delivered_id }}</span>
+            </div>
+            <div class="admin-mobile-kv">
+              <span class="admin-mobile-kv__label">最长未确认耗时</span>
+              <span class="admin-mobile-kv__value mono">
+                {{ formatPendingAge(row.oldest_pending_age) }}
+              </span>
+            </div>
+          </div>
+        </article>
+      </div>
     </section>
   </div>
 </template>
@@ -308,5 +392,20 @@ onBeforeUnmount(() => {
 .err-text {
   font-size: 12px;
   color: var(--im-text-secondary);
+}
+
+.status-chip {
+  font-size: 12px;
+}
+
+@media (max-width: 768px) {
+  .header-bar,
+  .panel-card {
+    padding: 14px;
+  }
+
+  .kpi-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 </style>

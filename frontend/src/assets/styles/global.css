@@ -424,3 +424,119 @@ textarea {
   background-color: var(--im-border-light);
   margin: 4px 8px;
 }
+
+/* ==========================================================================
+   Admin Responsive Table -> Mobile Card List (<= 768px)
+   ========================================================================== */
+
+.admin-table-desktop th .cell {
+  white-space: nowrap;
+}
+
+.admin-cards-mobile {
+  display: none;
+}
+
+@media (max-width: 768px) {
+  .admin-table-desktop {
+    display: none !important;
+  }
+
+  .admin-cards-mobile {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .admin-mobile-empty {
+    padding: 28px 16px;
+    text-align: center;
+    font-size: 13px;
+    color: var(--im-text-secondary);
+    background-color: var(--im-bg-subtle);
+    border-radius: var(--im-radius-md);
+    border: 0.5px solid var(--im-border-light);
+  }
+
+  .admin-mobile-card {
+    background-color: var(--im-bg-subtle);
+    border: 0.5px solid var(--im-border-light);
+    border-radius: var(--im-radius-md);
+    padding: 12px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .admin-mobile-card__head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  .admin-mobile-card__title-wrap {
+    min-width: 0;
+    flex: 1;
+  }
+
+  .admin-mobile-card__title {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--im-text-primary);
+    word-break: break-word;
+  }
+
+  .admin-mobile-card__sub {
+    margin-top: 2px;
+    font-size: 12px;
+    color: var(--im-text-secondary);
+    word-break: break-word;
+  }
+
+  .admin-mobile-card__badges {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  .admin-mobile-card__grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px 12px;
+  }
+
+  .admin-mobile-kv {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .admin-mobile-kv--full {
+    grid-column: 1 / -1;
+  }
+
+  .admin-mobile-kv__label {
+    font-size: 11px;
+    color: var(--im-text-secondary);
+  }
+
+  .admin-mobile-kv__value {
+    font-size: 13px;
+    color: var(--im-text-primary);
+    word-break: break-word;
+  }
+
+  .admin-mobile-card__actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 12px;
+    padding-top: 8px;
+    border-top: 0.5px solid var(--im-border-light);
+  }
+}

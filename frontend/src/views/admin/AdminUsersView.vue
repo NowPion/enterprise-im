@@ -165,70 +165,136 @@ onMounted(() => {
         <el-button @click="handleReset">重置</el-button>
       </div>
 
-      <el-table
-        v-loading="adminStore.usersLoading"
-        :data="adminStore.users"
-        border
-        size="small"
-        empty-text="暂无符合条件的用户"
-      >
-        <el-table-column prop="id" label="User ID" width="110" />
-        <el-table-column prop="username" label="用户名" min-width="130" />
-        <el-table-column prop="nickname" label="昵称" min-width="130" />
-        <el-table-column label="角色" width="90">
-          <template #default="{ row }">
-            <span class="role-badge" :class="row.role === 'admin' ? 'is-admin' : ''">
-              {{ row.role === 'admin' ? 'admin' : 'user' }}
-            </span>
-          </template>
-        </el-table-column>
-        <el-table-column label="状态" width="95">
-          <template #default="{ row }">
-            <span :class="row.status === 1 ? 'status-ok' : 'status-danger'">
-              {{ row.status === 1 ? '正常' : '已禁用' }}
-            </span>
-          </template>
-        </el-table-column>
-        <el-table-column label="在线态" width="85">
-          <template #default="{ row }">
-            <span class="online-cell">
-              <span class="dot" :class="row.online ? 'online' : 'offline'" />
-              {{ row.online ? '在线' : '离线' }}
-            </span>
-          </template>
-        </el-table-column>
-        <el-table-column prop="session_count" label="活跃会话" width="85" align="right" />
-        <el-table-column label="最后在线" width="165">
-          <template #default="{ row }">
-            <span class="time-text">{{ formatUtcTimestamp(row.last_online_at) }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="操作" width="210" fixed="right">
-          <template #default="{ row }">
-            <div class="row-actions">
-              <el-button link type="primary" size="small" @click="openDetail(row)">详情</el-button>
-              <el-button
-                link
-                size="small"
-                :type="row.status === 1 ? 'danger' : 'primary'"
-                :disabled="row.id === currentAdminId && row.status === 1"
-                @click="handleToggleStatus(row)"
-              >
-                {{ row.status === 1 ? '禁用' : '启用' }}
-              </el-button>
-              <el-button
-                link
-                type="primary"
-                size="small"
-                :disabled="row.session_count === 0 && !row.online"
-                @click="handleKickAll(row)"
-              >
-                踢下线
-              </el-button>
+      <div class="admin-table-desktop">
+        <el-table
+          v-loading="adminStore.usersLoading"
+          :data="adminStore.users"
+          border
+          size="small"
+          empty-text="暂无符合条件的用户"
+        >
+          <el-table-column prop="id" label="User ID" width="110" />
+          <el-table-column prop="username" label="用户名" min-width="130" />
+          <el-table-column prop="nickname" label="昵称" min-width="130" />
+          <el-table-column label="角色" width="90">
+            <template #default="{ row }">
+              <span class="role-badge" :class="row.role === 'admin' ? 'is-admin' : ''">
+                {{ row.role === 'admin' ? 'admin' : 'user' }}
+              </span>
+            </template>
+          </el-table-column>
+          <el-table-column label="状态" width="95">
+            <template #default="{ row }">
+              <span :class="row.status === 1 ? 'status-ok' : 'status-danger'">
+                {{ row.status === 1 ? '正常' : '已禁用' }}
+              </span>
+            </template>
+          </el-table-column>
+          <el-table-column label="在线态" width="85">
+            <template #default="{ row }">
+              <span class="online-cell">
+                <span class="dot" :class="row.online ? 'online' : 'offline'" />
+                {{ row.online ? '在线' : '离线' }}
+              </span>
+            </template>
+          </el-table-column>
+          <el-table-column prop="session_count" label="活跃会话" width="85" align="right" />
+          <el-table-column label="最后在线" width="165">
+            <template #default="{ row }">
+              <span class="time-text">{{ formatUtcTimestamp(row.last_online_at) }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="操作" width="210" fixed="right">
+            <template #default="{ row }">
+              <div class="row-actions">
+                <el-button link type="primary" size="small" @click="openDetail(row)">详情</el-button>
+                <el-button
+                  link
+                  size="small"
+                  :type="row.status === 1 ? 'danger' : 'primary'"
+                  :disabled="row.id === currentAdminId && row.status === 1"
+                  @click="handleToggleStatus(row)"
+                >
+                  {{ row.status === 1 ? '禁用' : '启用' }}
+                </el-button>
+                <el-button
+                  link
+                  type="primary"
+                  size="small"
+                  :disabled="row.session_count === 0 && !row.online"
+                  @click="handleKickAll(row)"
+                >
+                  踢下线
+                </el-button>
+              </div>
+            </template>
+          </el-table-column>
+        </el-table>
+      </div>
+
+      <div v-loading="adminStore.usersLoading" class="admin-cards-mobile">
+        <div v-if="adminStore.users.length === 0 && !adminStore.usersLoading" class="admin-mobile-empty">
+          暂无符合条件的用户
+        </div>
+        <article v-for="row in adminStore.users" :key="row.id" class="admin-mobile-card">
+          <div class="admin-mobile-card__head">
+            <div class="admin-mobile-card__title-wrap">
+              <div class="admin-mobile-card__title">{{ row.nickname || row.username }}</div>
+              <div class="admin-mobile-card__sub">@{{ row.username }} · ID {{ row.id }}</div>
             </div>
-          </template>
-        </el-table-column>
-      </el-table>
+            <div class="admin-mobile-card__badges">
+              <span class="role-badge" :class="row.role === 'admin' ? 'is-admin' : ''">
+                {{ row.role === 'admin' ? 'admin' : 'user' }}
+              </span>
+              <span :class="row.status === 1 ? 'status-ok' : 'status-danger'" class="status-chip">
+                {{ row.status === 1 ? '正常' : '已禁用' }}
+              </span>
+            </div>
+          </div>
+
+          <div class="admin-mobile-card__grid">
+            <div class="admin-mobile-kv">
+              <span class="admin-mobile-kv__label">在线态</span>
+              <span class="admin-mobile-kv__value online-cell">
+                <span class="dot" :class="row.online ? 'online' : 'offline'" />
+                {{ row.online ? '在线' : '离线' }}
+              </span>
+            </div>
+            <div class="admin-mobile-kv">
+              <span class="admin-mobile-kv__label">活跃会话</span>
+              <span class="admin-mobile-kv__value">{{ row.session_count }}</span>
+            </div>
+            <div class="admin-mobile-kv admin-mobile-kv--full">
+              <span class="admin-mobile-kv__label">最后在线</span>
+              <span class="admin-mobile-kv__value time-text">
+                {{ formatUtcTimestamp(row.last_online_at) }}
+              </span>
+            </div>
+          </div>
+
+          <div class="admin-mobile-card__actions">
+            <el-button link type="primary" size="small" @click="openDetail(row)">详情</el-button>
+            <el-button
+              link
+              size="small"
+              :type="row.status === 1 ? 'danger' : 'primary'"
+              :disabled="row.id === currentAdminId && row.status === 1"
+              @click="handleToggleStatus(row)"
+            >
+              {{ row.status === 1 ? '禁用' : '启用' }}
+            </el-button>
+            <el-button
+              link
+              type="primary"
+              size="small"
+              :disabled="row.session_count === 0 && !row.online"
+              @click="handleKickAll(row)"
+            >
+              踢下线
+            </el-button>
+          </div>
+        </article>
+      </div>
 
       <div v-if="adminStore.usersHasMore" class="load-more">
         <el-button :loading="adminStore.usersLoading" @click="handleLoadMore">加载更多</el-button>
@@ -348,5 +414,24 @@ onMounted(() => {
 .load-more {
   display: flex;
   justify-content: center;
+}
+
+.status-chip {
+  font-size: 12px;
+}
+
+@media (max-width: 768px) {
+  .panel-card {
+    padding: 14px;
+  }
+
+  .query-input {
+    width: 100%;
+  }
+
+  .filter-select {
+    flex: 1 1 calc(50% - 5px);
+    min-width: 0;
+  }
 }
 </style>

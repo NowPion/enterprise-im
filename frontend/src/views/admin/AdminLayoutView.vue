@@ -94,6 +94,7 @@ function backToChat() {
   display: flex;
   flex-direction: column;
   width: 100%;
+  min-width: 0;
   height: 100%;
   min-height: 0;
   background-color: var(--im-bg-grouped);
@@ -238,8 +239,10 @@ function backToChat() {
 
 .admin-content {
   flex: 1;
+  min-width: 0;
   min-height: 0;
   overflow-y: auto;
+  overflow-x: hidden;
   padding: 20px 24px;
 }
 
