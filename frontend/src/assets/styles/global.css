@@ -191,10 +191,11 @@ textarea {
 /* iOS Dialog / Modal Sheet */
 .el-dialog {
   border-radius: var(--im-radius-xl) !important;
-  background-color: var(--im-bg-surface) !important;
+  background-color: #ffffff !important;
   box-shadow: var(--im-shadow-sheet) !important;
   overflow: hidden;
   border: 0.5px solid rgba(60, 60, 67, 0.12);
+  isolation: isolate;
 }
 
 .el-dialog__header {
@@ -356,10 +357,10 @@ textarea {
   padding: 10px 18px !important;
 }
 
-/* Overlay blur */
+/* Modal overlay */
 .el-overlay {
-  backdrop-filter: blur(4px);
-  background-color: rgba(0, 0, 0, 0.28) !important;
+  z-index: 2500;
+  background-color: rgba(28, 28, 30, 0.56) !important;
 }
 
 /* Subtle iOS bubble & sheet entrance */
