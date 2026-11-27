@@ -144,6 +144,10 @@ function handleBackToList() {
   void router.push('/chat')
 }
 
+function handleGoContacts() {
+  void router.push('/contacts')
+}
+
 async function handleRefreshList() {
   try {
     await conversationStore.fetchList()
@@ -317,6 +321,7 @@ function roleLabel(role: string | null): string {
         @toggle-mute="handleToggleMute"
         @toggle-hide="handleToggleHide"
         @refresh="handleRefreshList"
+        @go-contacts="handleGoContacts"
       />
     </div>
 
