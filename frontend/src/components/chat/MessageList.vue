@@ -192,6 +192,7 @@ async function downloadPreviewImage() {
         <el-button
           v-if="hasMoreOlder"
           text
+          type="primary"
           size="small"
           :loading="loadingOlder"
           @click="handleManualLoadOlder"
@@ -273,7 +274,7 @@ async function downloadPreviewImage() {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  background-color: #f5f6f8;
+  background-color: var(--im-bg-surface);
 }
 
 .msg-list {
@@ -288,45 +289,42 @@ async function downloadPreviewImage() {
   flex-direction: column;
   align-items: center;
   gap: 6px;
-  margin-bottom: 12px;
+  margin-bottom: 10px;
 }
 
 .msg-list__no-more {
   font-size: 12px;
-  color: #9ca3af;
+  color: var(--im-text-muted);
 }
 
 .msg-list__syncing {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
   font-size: 12px;
-  color: #4b5563;
-  background-color: #ffffff;
-  border: 1px solid #e5e7eb;
+  color: var(--im-text-secondary);
+  background-color: var(--im-bg-grouped);
   border-radius: 9999px;
-  padding: 2px 10px;
+  padding: 3px 12px;
 }
 
 .msg-list__empty {
   text-align: center;
-  color: #6b7280;
-  font-size: 13px;
-  padding: 64px 16px;
+  color: var(--im-text-secondary);
+  font-size: 14px;
+  padding: 72px 16px;
 }
 
 .msg-list__divider {
   display: flex;
   justify-content: center;
-  margin: 14px 0;
+  margin: 14px 0 10px;
 }
 
 .msg-list__divider span {
   font-size: 11px;
-  color: #6b7280;
-  background-color: #eceef2;
-  padding: 2px 8px;
-  border-radius: 4px;
+  font-weight: 500;
+  color: var(--im-text-secondary);
 }
 
 .msg-list__jump-btn {
@@ -336,19 +334,20 @@ async function downloadPreviewImage() {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  padding: 6px 12px;
+  padding: 7px 14px;
   border-radius: 9999px;
-  border: 1px solid #e5e7eb;
-  background-color: #ffffff;
-  color: #2563eb;
-  font-size: 12px;
-  font-weight: 500;
-  box-shadow: 0 2px 8px rgba(17, 24, 39, 0.08);
+  border: 0.5px solid var(--im-border-light);
+  background-color: rgba(255, 255, 255, 0.92);
+  backdrop-filter: blur(18px);
+  color: var(--im-accent-primary);
+  font-size: 13px;
+  font-weight: 600;
+  box-shadow: var(--im-shadow-md);
   cursor: pointer;
 }
 
 .msg-list__jump-btn:hover {
-  background-color: #f9fafb;
+  background-color: #ffffff;
 }
 
 .msg-preview-box {
@@ -357,8 +356,8 @@ async function downloadPreviewImage() {
   display: flex;
   align-items: center;
   justify-content: center;
-  background-color: #f5f6f8;
-  border-radius: 6px;
+  background-color: var(--im-bg-grouped);
+  border-radius: 12px;
   overflow: hidden;
 }
 
@@ -371,6 +370,6 @@ async function downloadPreviewImage() {
 
 .msg-preview-box__loading {
   padding: 48px;
-  color: #6b7280;
+  color: var(--im-text-secondary);
 }
 </style>

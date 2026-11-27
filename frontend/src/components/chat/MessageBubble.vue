@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { computed, onUnmounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, onUnmounted, ref, watch } from 'vue'
 import {
-  Check,
   CircleCheck,
+  CopyDocument,
   Document,
   Download,
   InfoFilled,
@@ -229,19 +229,83 @@ function handleImageClick() {
   if (!targetUrl) return
   emit('preview-image', targetUrl, extra.value.filename || '图片预览')
 }
+
+// iOS Bubble Context Menu (Copy / Receipts / Recall)
+const contextMenu = ref<{ open: boolean; x: number; y: number }>({
+  open: false,
+  x: 0,
+  y: 0,
+})
+
+function openBubbleContextMenu(event: MouseEvent) {
+  if (isRecalledOriginal.value) return
+  const maxX = typeof window !== 'undefined' ? window.innerWidth - 180 : event.clientX
+  const maxY = typeof window !== 'undefined' ? window.innerHeight - 160 : event.clientY
+  contextMenu.value = {
+    open: true,
+    x: Math.max(8, Math.min(event.clientX, maxX)),
+    y: Math.max(8, Math.min(event.clientY, maxY)),
+  }
+}
+
+function closeContextMenu() {
+  if (contextMenu.value.open) {
+    contextMenu.value.open = false
+  }
+}
+
+async function copyMessageText() {
+  closeContextMenu()
+  const content = props.message.content?.trim()
+  if (!content) return
+  try {
+    await navigator.clipboard.writeText(content)
+    ElMessage.success('已复制文本')
+  } catch {
+    ElMessage.error('复制失败')
+  }
+}
+
+function triggerRecallFromMenu() {
+  closeContextMenu()
+  if (recallAllowed.value && props.message.msg_id) {
+    emit('recall', props.message.msg_id)
+  }
+}
+
+function triggerReceiptsFromMenu() {
+  closeContextMenu()
+  if (props.message.msg_id) {
+    emit('open-receipts', props.message.msg_id)
+  }
+}
+
+onMounted(() => {
+  if (typeof window !== 'undefined') {
+    window.addEventListener('click', closeContextMenu)
+    window.addEventListener('scroll', closeContextMenu, true)
+  }
+})
+
+onBeforeUnmount(() => {
+  if (typeof window !== 'undefined') {
+    window.removeEventListener('click', closeContextMenu)
+    window.removeEventListener('scroll', closeContextMenu, true)
+  }
+})
 </script>
 
 <template>
   <div v-if="isSystem" class="msg-notice-row">
     <span class="msg-notice-pill">
-      <el-icon :size="13"><InfoFilled /></el-icon>
+      <el-icon :size="12"><InfoFilled /></el-icon>
       <span>{{ message.content }}</span>
     </span>
   </div>
 
   <div v-else-if="isRecallRecord" class="msg-notice-row">
     <span class="msg-notice-pill">
-      <el-icon :size="13"><RefreshLeft /></el-icon>
+      <el-icon :size="12"><RefreshLeft /></el-icon>
       <span>{{ isSelf ? '你撤回了一条消息' : message.content || '撤回了一条消息' }}</span>
     </span>
   </div>
@@ -251,7 +315,8 @@ function handleImageClick() {
       <AuthorizedAvatar
         :src="senderAvatar"
         :name="senderName"
-        :size="34"
+        :size="32"
+        shape="circle"
       />
     </div>
 
@@ -267,6 +332,7 @@ function handleImageClick() {
             `is-${message.msg_type}`,
             { 'is-self': isSelf, 'is-recalled': isRecalledOriginal, 'is-failed': message.local_status === 'failed' },
           ]"
+          @contextmenu.prevent="openBubbleContextMenu"
         >
           <template v-if="isRecalledOriginal">
             <span class="msg-bubble__recalled-text">该消息已撤回</span>
@@ -294,9 +360,9 @@ function handleImageClick() {
           </template>
 
           <template v-else-if="message.msg_type === 'file'">
-            <div class="msg-file">
+            <div class="msg-file" :class="{ 'is-self': isSelf }">
               <div class="msg-file__icon">
-                <el-icon :size="22"><Document /></el-icon>
+                <el-icon :size="20"><Document /></el-icon>
               </div>
               <div class="msg-file__meta">
                 <div class="msg-file__name" :title="extra.filename || message.content">
@@ -343,6 +409,15 @@ function handleImageClick() {
         <div class="msg-row__actions">
           <span class="msg-row__time">{{ formatMessageTime(message.created_at) }}</span>
 
+          <button
+            v-if="message.msg_type === 'text' && !isRecalledOriginal && message.content"
+            type="button"
+            class="msg-action-link"
+            @click="copyMessageText"
+          >
+            复制
+          </button>
+
           <el-popconfirm
             v-if="recallAllowed"
             title="确认撤回这条消息吗？"
@@ -351,7 +426,7 @@ function handleImageClick() {
             @confirm="emit('recall', message.msg_id)"
           >
             <template #reference>
-              <button type="button" class="msg-action-link">撤回</button>
+              <button type="button" class="msg-action-link is-danger">撤回</button>
             </template>
           </el-popconfirm>
 
@@ -367,14 +442,10 @@ function handleImageClick() {
       </div>
 
       <div v-if="isSelf && !isRecalledOriginal" class="msg-row__status" :class="statusDisplay.cls">
-        <el-icon v-if="message.local_status === 'sending'" :size="12" class="is-loading">
+        <el-icon v-if="message.local_status === 'sending'" :size="11" class="is-loading">
           <Loading />
         </el-icon>
-        <el-icon v-else-if="message.local_status === 'sent'" :size="12"><Check /></el-icon>
-        <el-icon v-else-if="message.local_status === 'delivered' || message.local_status === 'read'" :size="12">
-          <CircleCheck />
-        </el-icon>
-        <el-icon v-else-if="message.local_status === 'failed'" :size="12"><WarningFilled /></el-icon>
+        <el-icon v-else-if="message.local_status === 'failed'" :size="11"><WarningFilled /></el-icon>
 
         <span>{{ statusDisplay.label }}</span>
 
@@ -397,9 +468,47 @@ function handleImageClick() {
       <AuthorizedAvatar
         :src="senderAvatar"
         :name="senderName || '我'"
-        :size="34"
+        :size="32"
+        shape="circle"
       />
     </div>
+
+    <Teleport to="body">
+      <div
+        v-if="contextMenu.open"
+        class="ios-context-menu"
+        :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }"
+        @click.stop
+      >
+        <button
+          v-if="message.msg_type === 'text' && message.content"
+          type="button"
+          class="ios-context-menu__item"
+          @click="copyMessageText"
+        >
+          <span>复制文本</span>
+          <el-icon :size="14"><CopyDocument /></el-icon>
+        </button>
+        <button
+          v-if="isSelf && conversationType === 'group' && message.msg_id"
+          type="button"
+          class="ios-context-menu__item"
+          @click="triggerReceiptsFromMenu"
+        >
+          <span>查看回执</span>
+          <el-icon :size="14"><CircleCheck /></el-icon>
+        </button>
+        <button
+          v-if="recallAllowed"
+          type="button"
+          class="ios-context-menu__item is-danger"
+          @click="triggerRecallFromMenu"
+        >
+          <span>撤回消息</span>
+          <el-icon :size="14"><RefreshLeft /></el-icon>
+        </button>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -414,19 +523,18 @@ function handleImageClick() {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  padding: 4px 10px;
+  padding: 3px 10px;
   border-radius: 9999px;
-  background-color: #f5f6f8;
-  border: 1px solid #e5e7eb;
-  color: #6b7280;
+  color: var(--im-text-secondary);
   font-size: 12px;
 }
 
 .msg-row {
   display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  margin-bottom: 14px;
+  align-items: flex-end;
+  gap: 8px;
+  margin-bottom: 10px;
+  animation: ios-bubble-in 0.16s var(--im-ease-ios);
 }
 
 .msg-row.is-self {
@@ -435,14 +543,15 @@ function handleImageClick() {
 
 .msg-row__avatar {
   flex-shrink: 0;
+  margin-bottom: 2px;
 }
 
 .msg-row__content-col {
-  max-width: min(70%, 540px);
+  max-width: min(68%, 520px);
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 4px;
+  gap: 3px;
 }
 
 .msg-row__content-col.is-self {
@@ -451,14 +560,14 @@ function handleImageClick() {
 
 .msg-row__sender {
   font-size: 12px;
-  color: #6b7280;
-  padding-left: 2px;
+  color: var(--im-text-secondary);
+  padding-left: 10px;
 }
 
 .msg-row__bubble-wrap {
   display: flex;
   align-items: flex-end;
-  gap: 8px;
+  gap: 6px;
 }
 
 .msg-row__bubble-wrap.is-self {
@@ -466,42 +575,41 @@ function handleImageClick() {
 }
 
 .msg-bubble {
-  padding: 9px 12px;
-  border-radius: 8px;
-  background-color: #ffffff;
-  border: 1px solid #e5e7eb;
-  color: #111827;
-  font-size: 14px;
-  line-height: 1.5;
+  padding: 9px 14px;
+  border-radius: 18px 18px 18px 5px;
+  background-color: var(--im-bubble-peer);
+  color: var(--im-bubble-peer-text);
+  font-size: 15px;
+  line-height: 1.42;
+  transition: filter 0.12s ease;
 }
 
 .msg-bubble.is-self {
-  background-color: #111827;
-  border-color: #111827;
-  color: #ffffff;
+  border-radius: 18px 18px 5px 18px;
+  background-color: var(--im-bubble-self);
+  color: var(--im-bubble-self-text);
 }
 
 .msg-bubble.is-image {
-  padding: 4px;
-  background-color: #ffffff;
-  border-color: #e5e7eb;
+  padding: 3px;
+  border-radius: 16px;
+  background-color: var(--im-bg-grouped);
 }
 
 .msg-bubble.is-file {
-  background-color: #ffffff;
-  border-color: #e5e7eb;
-  color: #111827;
+  background-color: #f2f2f7;
+  color: var(--im-text-primary);
+  border: 0.5px solid var(--im-border-light);
 }
 
 .msg-bubble.is-recalled {
-  background-color: #f5f6f8;
-  border-color: #e5e7eb;
-  color: #6b7280;
+  background-color: var(--im-bg-fill);
+  color: var(--im-text-secondary);
   font-style: italic;
 }
 
 .msg-bubble.is-failed {
-  border-color: #fca5a5;
+  box-shadow: 0 0 0 1.5px var(--im-status-danger);
 }
 
 .msg-bubble__text {
@@ -514,9 +622,9 @@ function handleImageClick() {
 }
 
 .msg-image {
-  border-radius: 6px;
+  border-radius: 14px;
   overflow: hidden;
-  background-color: #f5f6f8;
+  background-color: var(--im-bg-grouped);
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -536,7 +644,7 @@ function handleImageClick() {
   align-items: center;
   gap: 4px;
   font-size: 12px;
-  color: #6b7280;
+  color: var(--im-text-secondary);
 }
 
 .msg-file {
@@ -550,10 +658,9 @@ function handleImageClick() {
 .msg-file__icon {
   width: 38px;
   height: 38px;
-  border-radius: 6px;
-  background-color: #f5f6f8;
-  border: 1px solid #e5e7eb;
-  color: #374151;
+  border-radius: 10px;
+  background-color: var(--im-accent-primary-soft);
+  color: var(--im-accent-primary);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -566,17 +673,17 @@ function handleImageClick() {
 }
 
 .msg-file__name {
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 500;
-  color: #111827;
+  color: var(--im-text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .msg-file__sub {
-  font-size: 11px;
-  color: #6b7280;
+  font-size: 12px;
+  color: var(--im-text-secondary);
   margin-top: 2px;
 }
 
@@ -594,14 +701,18 @@ function handleImageClick() {
 
 .msg-voice__bar {
   flex: 1;
-  min-width: 64px;
+  min-width: 68px;
 }
 
 .msg-voice__track {
   height: 4px;
-  border-radius: 2px;
-  background-color: rgba(156, 163, 175, 0.35);
+  border-radius: 9999px;
+  background-color: rgba(120, 120, 128, 0.25);
   overflow: hidden;
+}
+
+.msg-bubble.is-self .msg-voice__track {
+  background-color: rgba(255, 255, 255, 0.35);
 }
 
 .msg-voice__fill {
@@ -624,18 +735,23 @@ function handleImageClick() {
 
 .msg-row__time {
   font-size: 11px;
-  color: #9ca3af;
+  color: var(--im-text-muted);
 }
 
 .msg-action-link {
   border: none;
   background: transparent;
-  color: #6b7280;
+  color: var(--im-accent-primary);
   font-size: 11px;
-  padding: 0 2px;
+  font-weight: 500;
+  padding: 0 3px;
   cursor: pointer;
   opacity: 0;
   transition: opacity 0.15s ease;
+}
+
+.msg-action-link.is-danger {
+  color: var(--im-status-danger);
 }
 
 .msg-row:hover .msg-action-link {
@@ -643,28 +759,30 @@ function handleImageClick() {
 }
 
 .msg-action-link:hover {
-  color: #111827;
   text-decoration: underline;
 }
 
+/* iOS thin delivery/read caption below self bubble */
 .msg-row__status {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  padding-right: 4px;
   font-size: 11px;
-  color: #6b7280;
+  font-weight: 500;
+  color: var(--im-text-muted);
 }
 
 .msg-row__status.is-read {
-  color: #10b981;
+  color: var(--im-accent-primary);
 }
 
 .msg-row__status.is-delivered {
-  color: #2563eb;
+  color: var(--im-text-secondary);
 }
 
 .msg-row__status.is-failed {
-  color: #ef4444;
+  color: var(--im-status-danger);
 }
 
 .msg-row__err-text {
@@ -675,16 +793,17 @@ function handleImageClick() {
 }
 
 .msg-retry-btn {
-  border: 1px solid #fca5a5;
-  background-color: #ffffff;
-  color: #ef4444;
+  border: none;
+  background-color: rgba(255, 59, 48, 0.12);
+  color: var(--im-status-danger);
   font-size: 11px;
-  padding: 1px 6px;
-  border-radius: 4px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 9999px;
   cursor: pointer;
 }
 
 .msg-retry-btn:hover {
-  background-color: #fef2f2;
+  background-color: rgba(255, 59, 48, 0.2);
 }
 </style>

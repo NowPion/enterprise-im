@@ -367,7 +367,9 @@ function roleLabel(role: string | null): string {
       </div>
 
       <div v-else class="chat-workspace__empty">
-        <el-icon :size="44" class="chat-workspace__empty-icon"><ChatDotRound /></el-icon>
+        <div class="chat-workspace__empty-badge">
+          <el-icon :size="36" class="chat-workspace__empty-icon"><ChatDotRound /></el-icon>
+        </div>
         <h3>选择一个会话开始沟通</h3>
         <p>支持单聊与群聊实时消息、媒体上传、四阶段回执及断线自动补偿</p>
       </div>
@@ -376,7 +378,7 @@ function roleLabel(role: string | null): string {
     <el-drawer
       v-model="membersDrawerVisible"
       title="会话成员"
-      size="320px"
+      size="340px"
       destroy-on-close
     >
       <div v-if="activeConversation?.type === 'group' && activeConversation.group_id" class="members-drawer__top">
@@ -391,7 +393,7 @@ function roleLabel(role: string | null): string {
         </el-button>
       </div>
 
-      <div v-loading="membersLoading" class="members-drawer__list">
+      <div v-loading="membersLoading" class="members-drawer__list ios-grouped-section">
         <div
           v-for="member in activeMembers"
           :key="member.user.id"
@@ -400,9 +402,10 @@ function roleLabel(role: string | null): string {
           <AuthorizedAvatar
             :src="member.user.avatar_url"
             :name="member.nickname_in_group || member.user.nickname"
-            :size="34"
+            :size="36"
             :online="member.online"
             show-online
+            shape="circle"
           />
           <div class="members-drawer__info">
             <div class="members-drawer__name-row">
@@ -438,7 +441,7 @@ function roleLabel(role: string | null): string {
   width: 100%;
   height: 100%;
   min-height: 0;
-  background-color: #ffffff;
+  background-color: var(--im-bg-grouped);
   overflow: hidden;
 }
 
@@ -455,7 +458,7 @@ function roleLabel(role: string | null): string {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  background-color: #f5f6f8;
+  background-color: var(--im-bg-grouped);
 }
 
 .chat-workspace__empty {
@@ -464,44 +467,65 @@ function roleLabel(role: string | null): string {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 8px;
+  gap: 10px;
   padding: 24px;
-  color: #6b7280;
+  color: var(--im-text-secondary);
   text-align: center;
+}
+
+.chat-workspace__empty-badge {
+  width: 68px;
+  height: 68px;
+  border-radius: 18px;
+  background-color: var(--im-bg-fill);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 4px;
 }
 
 .chat-workspace__empty h3 {
   margin: 0;
-  font-size: 16px;
+  font-size: 17px;
   font-weight: 600;
-  color: #111827;
+  color: var(--im-text-primary);
 }
 
 .chat-workspace__empty p {
   margin: 0;
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .chat-workspace__empty-icon {
-  color: #9ca3af;
+  color: var(--im-accent-primary);
 }
 
 .members-drawer__top {
-  margin-bottom: 12px;
+  margin-bottom: 14px;
 }
 
 .members-drawer__list {
   display: flex;
   flex-direction: column;
-  gap: 10px;
 }
 
 .members-drawer__row {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding-bottom: 10px;
-  border-bottom: 1px solid #f0f2f5;
+  gap: 12px;
+  padding: 12px 14px;
+  background-color: var(--im-bg-surface);
+}
+
+.members-drawer__row + .members-drawer__row::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 62px;
+  right: 0;
+  height: 0.5px;
+  background-color: var(--im-border-light);
 }
 
 .members-drawer__info {
@@ -516,17 +540,17 @@ function roleLabel(role: string | null): string {
 }
 
 .members-drawer__name {
-  font-size: 13px;
+  font-size: 15px;
   font-weight: 500;
-  color: #111827;
+  color: var(--im-text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .members-drawer__sub {
-  font-size: 11px;
-  color: #6b7280;
+  font-size: 12px;
+  color: var(--im-text-secondary);
   margin-top: 2px;
 }
 
