@@ -57,6 +57,36 @@ export const useAuthStore = defineStore('auth', () => {
   let boundWSClient: WSClient | null = null
   let wsUnsubs: Array<() => void> = []
   let initPromise: Promise<boolean> | null = null
+  let transportProbeInFlight: Promise<void> | null = null
+
+  function probeAuthOnWSTransportError(client: WSClient) {
+    if (transportProbeInFlight || client.isConnected || !tokens.value?.refresh_token) return
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) return
+    transportProbeInFlight = userApi
+      .getMe()
+      .then((res) => {
+        if (res?.user) {
+          user.value = res.user
+          activeUserId = res.user.id
+          if (!client.isConnected) {
+            client.clearAuthRejectionAndRetry()
+          }
+        }
+      })
+      .catch((err) => {
+        // 401 triggers Axios refresh -> onTokensRotated; transient network/5xx keeps backoff without poisoning token.
+        const status =
+          typeof err === 'object' && err !== null && 'httpStatus' in err
+            ? Number((err as { httpStatus?: number }).httpStatus ?? 0)
+            : 0
+        if (status === 0 || status >= 500) {
+          client.clearAuthRejection()
+        }
+      })
+      .finally(() => {
+        transportProbeInFlight = null
+      })
+  }
 
   const isAuthenticated = computed(() => Boolean(tokens.value?.access_token && user.value))
   const isAdmin = computed(() => user.value?.role === 'admin')
@@ -115,6 +145,8 @@ export const useAuthStore = defineStore('auth', () => {
           void refreshTokensSingleFlight(tokens.value.access_token).catch(() => {
             // Expiry redirect handled inside refreshTokensSingleFlight callback
           })
+        } else if (err.kind === 'transport') {
+          probeAuthOnWSTransportError(client)
         }
       }),
 
@@ -137,6 +169,9 @@ export const useAuthStore = defineStore('auth', () => {
       activeAccessToken = nextTokens.access_token
       sessionId.value = nextTokens.session_id
       deviceId.value = nextTokens.device_id || getDeviceId()
+      if (user.value && boundWSClient && !boundWSClient.isConnected) {
+        boundWSClient.clearAuthRejectionAndRetry()
+      }
     },
     onSessionExpired(code, message) {
       const displayMsg =
