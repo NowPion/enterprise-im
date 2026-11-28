@@ -15,6 +15,17 @@ import (
 	"enterprise-im/backend/internal/pkg/snowflake"
 )
 
+func testLiveRedisDB() int {
+	for _, key := range []string{"IM_REDIS_DB", "REDIS_DB"} {
+		if v := os.Getenv(key); v != "" {
+			if parsed, err := strconv.Atoi(v); err == nil && parsed >= 0 {
+				return parsed
+			}
+		}
+	}
+	return 0
+}
+
 func TestStartupConnectivityFailuresFailFast(t *testing.T) {
 	log, err := logger.New(config.LogConfig{Level: "error", Format: "json"}, nil)
 	if err != nil {
@@ -89,7 +100,7 @@ func TestLiveMySQLAndRedisModelsIntegration(t *testing.T) {
 	rdb, err := NewRedis(config.RedisConfig{
 		Addr:         redisAddr,
 		Password:     redisPass,
-		DB:           0,
+		DB:           testLiveRedisDB(),
 		PoolSize:     5,
 		MinIdleConns: 1,
 		DialTimeout:  3 * time.Second,

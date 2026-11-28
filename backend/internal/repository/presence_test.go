@@ -40,10 +40,10 @@ func TestLiveReapLastLeaseAndRetryOfflineTimestamp(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Delete(&user)
-	store := NewPresenceRepository(db, rdb, 300*time.Millisecond)
+	store := NewPresenceRepository(db, rdb, 300*time.Millisecond, WithPresenceKeyPrefix("test:pres:"+uuid.NewString()+":"))
 	lease := ConnLease{UserID: user.ID, SessionID: user.ID, DeviceID: "web", NodeID: "lease-test", ConnID: uuid.NewString()}
 	uid := strconv.FormatUint(user.ID, 10)
-	defer rdb.Del(ctx, "im:presence:user:"+uid)
+	defer rdb.Del(ctx, store.userKey(uid), store.DeadlinesKey(), store.ActiveKey(), store.OfflinePendingKey())
 	if err := store.Open(ctx, lease); err != nil {
 		t.Fatal(err)
 	}
@@ -55,11 +55,11 @@ func TestLiveReapLastLeaseAndRetryOfflineTimestamp(t *testing.T) {
 	if err := db.First(&user, user.ID).Error; err != nil || user.LastOnlineAt == nil {
 		t.Fatal("expired lease did not persist last_online_at", err)
 	}
-	if rdb.Get(ctx, "im:presence:user:"+uid).Val() != "0" {
+	if rdb.Get(ctx, store.userKey(uid)).Val() != "0" {
 		t.Fatal("expired lease still online")
 	}
 	want := *user.LastOnlineAt
-	if err := rdb.ZAdd(ctx, offlinePendingKey, redis.Z{Member: uid, Score: float64(want.Add(-time.Second).UnixMilli())}).Err(); err != nil {
+	if err := rdb.ZAdd(ctx, store.OfflinePendingKey(), redis.Z{Member: uid, Score: float64(want.Add(-time.Second).UnixMilli())}).Err(); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.ReapExpired(ctx); err != nil {
@@ -68,7 +68,7 @@ func TestLiveReapLastLeaseAndRetryOfflineTimestamp(t *testing.T) {
 	if err := db.First(&user, user.ID).Error; err != nil || !user.LastOnlineAt.Equal(want) {
 		t.Fatal("retry replaced a later offline transition", err)
 	}
-	if err := rdb.ZScore(ctx, offlinePendingKey, uid).Err(); !errors.Is(err, redis.Nil) {
+	if err := rdb.ZScore(ctx, store.OfflinePendingKey(), uid).Err(); !errors.Is(err, redis.Nil) {
 		t.Fatal("offline update not acknowledged", err)
 	}
 }
@@ -87,26 +87,25 @@ func TestLiveConnectionLeaseOwnershipAndTTL(t *testing.T) {
 	}
 	defer rdb.Close()
 	ctx := context.Background()
-	store := NewPresenceRepository(nil, rdb, 75*time.Second)
+	store := NewPresenceRepository(nil, rdb, 75*time.Second, WithPresenceKeyPrefix("test:pres:"+uuid.NewString()+":"))
 	user := uint64(time.Now().UnixNano())
 	userID := strconv.FormatUint(user, 10)
 	first := ConnLease{UserID: user, SessionID: user, DeviceID: "web", NodeID: "A", ConnID: uuid.NewString()}
 	second := first
 	second.ConnID = uuid.NewString()
-	userKey, routeKey, sessKey := "im:presence:user:"+userID, "im:route:user:"+userID, "im:route:session:"+userID
+	userKey, routeKey, sessKey := store.userKey(userID), store.routeUserKey(userID), store.routeSessionKey(userID)
 	defer func() {
 		for _, lease := range []ConnLease{first, second} {
 			_, _ = store.change(ctx, "close", lease)
 		}
-		rdb.Del(ctx, userKey)
-		rdb.ZRem(ctx, offlinePendingKey, userID)
+		rdb.Del(ctx, userKey, store.DeadlinesKey(), store.ActiveKey(), store.OfflinePendingKey())
 	}()
 	for _, lease := range []ConnLease{first, second} {
 		if err := store.Open(ctx, lease); err != nil {
 			t.Fatal(err)
 		}
 	}
-	connKey := "im:presence:conn:" + first.ConnID
+	connKey := store.connKey(first.ConnID)
 	fields, err := rdb.HGetAll(ctx, connKey).Result()
 	if err != nil || fields["user_id"] != userID || fields["session_id"] != userID || fields["device_id"] != "web" || fields["node_id"] != "A" || fields["conn_id"] != first.ConnID || fields["last_seen_at"] == "" {
 		t.Fatalf("unexpected lease fields %v, %v", fields, err)
@@ -223,7 +222,7 @@ func TestLiveReconnectAfterLastLeaseExpiryPublishesOfflineThenOnline(t *testing.
 	defer db.Delete(&user)
 
 	uid := strconv.FormatUint(user.ID, 10)
-	store := NewPresenceRepository(db, rdb, 250*time.Millisecond)
+	store := NewPresenceRepository(db, rdb, 250*time.Millisecond, WithPresenceKeyPrefix("test:pres:"+uuid.NewString()+":"))
 	sub, err := store.Subscribe(ctx, "m1-node-"+uuid.NewString())
 	if err != nil {
 		t.Fatal(err)
@@ -240,9 +239,7 @@ func TestLiveReconnectAfterLastLeaseExpiryPublishesOfflineThenOnline(t *testing.
 		for _, lease := range []ConnLease{lease1, lease2, lease3, lease4} {
 			_, _ = store.change(ctx, "close", lease)
 		}
-		rdb.Del(ctx, "im:presence:user:"+uid, "im:route:user:"+uid)
-		rdb.HDel(ctx, "im:presence:active", uid)
-		rdb.ZRem(ctx, offlinePendingKey, uid)
+		rdb.Del(ctx, store.userKey(uid), store.routeUserKey(uid), store.DeadlinesKey(), store.ActiveKey(), store.OfflinePendingKey())
 	}()
 
 	// 1. Open first connection and let its lease naturally expire without running ReapExpired.
@@ -274,13 +271,13 @@ func TestLiveReconnectAfterLastLeaseExpiryPublishesOfflineThenOnline(t *testing.
 		t.Fatal(err)
 	}
 	assertNoPresencePubSubForUser(t, ch, uid, 100*time.Millisecond)
-	if got := rdb.Get(ctx, "im:presence:user:"+uid).Val(); got != "1" {
+	if got := rdb.Get(ctx, store.userKey(uid)).Val(); got != "1" {
 		t.Fatalf("expected active connection count 1 after reap, got %q", got)
 	}
-	if got := rdb.SCard(ctx, "im:route:user:"+uid).Val(); got != 1 || !rdb.SIsMember(ctx, "im:route:user:"+uid, "m1-node:"+lease2.ConnID).Val() {
+	if got := rdb.SCard(ctx, store.routeUserKey(uid)).Val(); got != 1 || !rdb.SIsMember(ctx, store.routeUserKey(uid), "m1-node:"+lease2.ConnID).Val() {
 		t.Fatalf("expected only lease2 route remaining after reap, card=%d", got)
 	}
-	if err := rdb.ZScore(ctx, offlinePendingKey, uid).Err(); !errors.Is(err, redis.Nil) {
+	if err := rdb.ZScore(ctx, store.OfflinePendingKey(), uid).Err(); !errors.Is(err, redis.Nil) {
 		t.Fatalf("expected offline pending key acknowledged, got %v", err)
 	}
 
