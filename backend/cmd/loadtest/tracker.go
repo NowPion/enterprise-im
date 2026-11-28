@@ -105,7 +105,10 @@ type Tracker struct {
 	deliveredSet     map[clientMsgKey]struct{}
 	duplicateDelivs  int
 	outOfOrderCount  int
-	sampleFailures   []string
+	ackFailureSamples []string
+	dupSamples        []string
+	oooSamples        []string
+	missingSamples    []string
 
 	connectLatencies  []time.Duration
 	pingLatencies     []time.Duration
@@ -162,7 +165,9 @@ func (t *Tracker) AddAckRetries(n int) {
 func (t *Tracker) RecordAckFailure(detail string) {
 	t.mu.Lock()
 	t.ackFailures = append(t.ackFailures, detail)
-	t.addFailureSampleLocked("ack_failure: " + detail)
+	if len(t.ackFailureSamples) < 10 {
+		t.ackFailureSamples = append(t.ackFailureSamples, "ack_failure: "+detail)
+	}
 	t.mu.Unlock()
 }
 
@@ -187,13 +192,17 @@ func (t *Tracker) RegisterExpectedMessage(exp ExpectedMessage) {
 
 	if prev, exists := t.expectedByMsgID[exp.MsgID]; exists && prev.ClientMsgID != exp.ClientMsgID {
 		t.ackSeqCollisions++
-		t.addFailureSampleLocked(fmt.Sprintf("duplicate msg_id=%d between client_msg_id %s and %s", exp.MsgID, prev.ClientMsgID, exp.ClientMsgID))
+		if len(t.dupSamples) < 10 {
+			t.dupSamples = append(t.dupSamples, fmt.Sprintf("duplicate msg_id=%d between client_msg_id %s and %s", exp.MsgID, prev.ClientMsgID, exp.ClientMsgID))
+		}
 		return
 	}
 	csk := convSeqKey{convID: exp.ConvID, seq: exp.Seq}
 	if prevMsgID, exists := t.expectedConvSeq[csk]; exists && prevMsgID != exp.MsgID {
 		t.ackSeqCollisions++
-		t.addFailureSampleLocked(fmt.Sprintf("conv=%d seq=%d collision msg_ids %d vs %d", exp.ConvID, exp.Seq, prevMsgID, exp.MsgID))
+		if len(t.dupSamples) < 10 {
+			t.dupSamples = append(t.dupSamples, fmt.Sprintf("conv=%d seq=%d collision msg_ids %d vs %d", exp.ConvID, exp.Seq, prevMsgID, exp.MsgID))
+		}
 	} else {
 		t.expectedConvSeq[csk] = exp.MsgID
 	}
@@ -229,15 +238,19 @@ func (t *Tracker) RecordPushDelivery(d PushDelivery) {
 
 	if _, dup := st.seenMsg[d.MsgID]; dup {
 		t.duplicateDelivs++
-		t.addFailureSampleLocked(fmt.Sprintf("duplicate push user=%d conv=%d msg_id=%d seq=%d", d.ReceiverUserID, d.ConvID, d.MsgID, d.Seq))
+		if len(t.dupSamples) < 10 {
+			t.dupSamples = append(t.dupSamples, fmt.Sprintf("duplicate push user=%d conv=%d msg_id=%d seq=%d", d.ReceiverUserID, d.ConvID, d.MsgID, d.Seq))
+		}
 		return
 	}
 	st.seenMsg[d.MsgID] = struct{}{}
 
 	if st.lastSeq > 0 && d.Seq <= st.lastSeq {
 		t.outOfOrderCount++
-		t.addFailureSampleLocked(fmt.Sprintf("out_of_order push user=%d conv=%d prev_seq=%d curr_seq=%d msg_id=%d",
-			d.ReceiverUserID, d.ConvID, st.lastSeq, d.Seq, d.MsgID))
+		if len(t.oooSamples) < 10 {
+			t.oooSamples = append(t.oooSamples, fmt.Sprintf("out_of_order push user=%d conv=%d prev_seq=%d curr_seq=%d msg_id=%d",
+				d.ReceiverUserID, d.ConvID, st.lastSeq, d.Seq, d.MsgID))
+		}
 	}
 	if d.Seq > st.lastSeq {
 		st.lastSeq = d.Seq
@@ -294,8 +307,10 @@ func (t *Tracker) Summarize() TrackerSummary {
 				actualUnique++
 			} else {
 				missing++
-				t.addFailureSampleLocked(fmt.Sprintf("missing delivery user=%d conv=%d msg_id=%d seq=%d",
-					uid, exp.ConvID, msgID, exp.Seq))
+				if len(t.missingSamples) < 10 {
+					t.missingSamples = append(t.missingSamples, fmt.Sprintf("missing delivery user=%d conv=%d msg_id=%d seq=%d",
+						uid, exp.ConvID, msgID, exp.Seq))
+				}
 			}
 		}
 	}
@@ -308,8 +323,11 @@ func (t *Tracker) Summarize() TrackerSummary {
 		dupRate = float64(t.duplicateDelivs) / float64(t.expectedDelivSum)
 	}
 
-	samples := make([]string, len(t.sampleFailures))
-	copy(samples, t.sampleFailures)
+	samples := make([]string, 0, len(t.ackFailureSamples)+len(t.dupSamples)+len(t.oooSamples)+len(t.missingSamples))
+	samples = append(samples, t.oooSamples...)
+	samples = append(samples, t.dupSamples...)
+	samples = append(samples, t.missingSamples...)
+	samples = append(samples, t.ackFailureSamples...)
 
 	return TrackerSummary{
 		TotalSentAttempts:        totalAttempts,
@@ -339,8 +357,8 @@ func (t *Tracker) Summarize() TrackerSummary {
 	}
 }
 
-func (t *Tracker) addFailureSampleLocked(s string) {
-	if len(t.sampleFailures) < 20 {
-		t.sampleFailures = append(t.sampleFailures, s)
-	}
+func (t *Tracker) DuplicateCount() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.duplicateDelivs
 }

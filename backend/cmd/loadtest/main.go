@@ -28,6 +28,7 @@ type Config struct {
 	SingleMsgsPerUser  int
 	GroupMsgsPerUser   int
 	SendInterval       time.Duration
+	SendStagger        time.Duration
 	HeartbeatInterval  time.Duration
 	HoldDuration       time.Duration
 	SetupConcurrency   int
@@ -52,6 +53,7 @@ func loadConfig() Config {
 		SingleMsgsPerUser:  envInt("LOADTEST_SINGLE_MSGS", 2),
 		GroupMsgsPerUser:   envInt("LOADTEST_GROUP_MSGS", 2),
 		SendInterval:       envDuration("LOADTEST_SEND_INTERVAL", 100*time.Millisecond),
+		SendStagger:        envDuration("LOADTEST_SEND_STAGGER", 2*time.Second),
 		HeartbeatInterval:  envDuration("LOADTEST_HEARTBEAT_INTERVAL", 10*time.Second),
 		HoldDuration:       envDuration("LOADTEST_HOLD_DURATION", 11*time.Second),
 		SetupConcurrency:   envInt("LOADTEST_SETUP_CONCURRENCY", 24),
@@ -74,6 +76,7 @@ func loadConfig() Config {
 	flag.IntVar(&cfg.SingleMsgsPerUser, "single-msgs", cfg.SingleMsgsPerUser, "Single-chat messages sent per user")
 	flag.IntVar(&cfg.GroupMsgsPerUser, "group-msgs", cfg.GroupMsgsPerUser, "Group-chat messages sent per user")
 	flag.DurationVar(&cfg.SendInterval, "send-interval", cfg.SendInterval, "Delay between messages sent by the same client")
+	flag.DurationVar(&cfg.SendStagger, "send-stagger", cfg.SendStagger, "Random initial stagger window before each client starts sending")
 	flag.DurationVar(&cfg.HeartbeatInterval, "heartbeat-interval", cfg.HeartbeatInterval, "WebSocket ping interval")
 	flag.DurationVar(&cfg.HoldDuration, "hold-duration", cfg.HoldDuration, "Minimum connected duration to exercise heartbeat keepalive")
 	flag.IntVar(&cfg.SetupConcurrency, "setup-concurrency", cfg.SetupConcurrency, "Worker concurrency for HTTP registration/login/setup")
@@ -504,8 +507,9 @@ func runLoadTest(ctx context.Context, cfg Config) (*LoadTestReport, error) {
 
 	sendErr := runPool(ctx, cfg.Clients, cfg.Clients, func(idx int) error {
 		u := users[idx]
-		// Stagger start across users over 0..1s for sustained concurrent load.
-		time.Sleep(randDuration(minDuration(time.Second, maxDuration(50*time.Millisecond, cfg.SendInterval*2))))
+		if cfg.SendStagger > 0 {
+			time.Sleep(randDuration(cfg.SendStagger))
+		}
 
 		type sendTask struct {
 			conv *ConversationInfo
@@ -599,8 +603,7 @@ func runLoadTest(ctx context.Context, cfg Config) (*LoadTestReport, error) {
 	sampleCount := min(cfg.IdempotencySamples, len(sentRecords))
 	if sampleCount > 0 {
 		rep.IdempotencyChecked = sampleCount
-		// Snapshot delivery counts before resend probes.
-		beforeDeliveries := tracker.TotalPushDeliveries()
+		beforeDup := tracker.DuplicateCount()
 		var idemPass, idemFail atomic.Int64
 		_ = runPool(ctx, sampleCount, min(32, sampleCount), func(i int) error {
 			rec := sentRecords[(i*len(sentRecords))/sampleCount]
@@ -618,13 +621,8 @@ func runLoadTest(ctx context.Context, cfg Config) (*LoadTestReport, error) {
 			return nil
 		})
 		time.Sleep(500 * time.Millisecond)
-		afterDeliveries := tracker.TotalPushDeliveries()
-		if afterDeliveries != beforeDeliveries {
-			// Any extra msg.push emitted by idempotent retries is a duplicate push failure.
-			rep.IdempotencyFailed = int(idemFail.Load()) + int(afterDeliveries-beforeDeliveries)
-		} else {
-			rep.IdempotencyFailed = int(idemFail.Load())
-		}
+		afterDup := tracker.DuplicateCount()
+		rep.IdempotencyFailed = int(idemFail.Load()) + (afterDup - beforeDup)
 		rep.IdempotencyPassed = int(idemPass.Load())
 		fmt.Printf("[loadtest] idempotency probes: checked=%d passed=%d failed=%d\n",
 			rep.IdempotencyChecked, rep.IdempotencyPassed, rep.IdempotencyFailed)
