@@ -112,7 +112,7 @@ func TestLiveUserRepositoryAndPresenceIntegration(t *testing.T) {
 	rdb, err := NewRedis(config.RedisConfig{
 		Addr:         redisAddr,
 		Password:     redisPass,
-		DB:           0,
+		DB:           testLiveRedisDB(),
 		PoolSize:     5,
 		MinIdleConns: 1,
 		DialTimeout:  3 * time.Second,
@@ -162,6 +162,9 @@ func TestLiveUserRepositoryAndPresenceIntegration(t *testing.T) {
 		if err := tx.Create(u).Error; err != nil {
 			t.Fatalf("seed test user: %v", err)
 		}
+	}
+	if err := tx.Model(&uDisabled).Update("status", model.UserStatusDisabled).Error; err != nil {
+		t.Fatalf("disable seeded test user: %v", err)
 	}
 
 	repo := NewUserRepository(tx)
