@@ -497,12 +497,13 @@ func TestLiveConsumerDeliveryIdempotencyReclaimDeadLetterAndDrain(t *testing.T) 
 
 	// 3. Dead-letter queue after 5 failures AND after >15 minutes pending age.
 	t.Run("DeadLetterOn5FailuresAnd15MinAge", func(t *testing.T) {
-		// 3a. 5 failures on im:stream:messages -> im:stream:dead:messages + XACK original.
-		stream5 := "im:stream:test:dlq5:" + uuid.NewString()
+		// 3a. 5 failures on messages test stream -> isolated dead-letter stream + XACK original.
+		dlq5ID := uuid.NewString()
+		stream5 := "im:stream:test:dlq5:" + dlq5ID
 		group5 := GroupMsgDeliver
-		deadStreamMsg := DeadLetterStream(StreamMessages)
+		deadStreamMsg := "im:stream:test:dead:dlq5:" + dlq5ID
 		t.Cleanup(func() {
-			_ = rdb.Del(context.Background(), stream5, PendingReclaimKey(stream5, group5)).Err()
+			_ = rdb.Del(context.Background(), stream5, deadStreamMsg, PendingReclaimKey(stream5, group5)).Err()
 		})
 		if err := rdb.XGroupCreateMkStream(ctx, stream5, group5, "0").Err(); err != nil {
 			t.Fatal(err)
@@ -545,10 +546,14 @@ func TestLiveConsumerDeliveryIdempotencyReclaimDeadLetterAndDrain(t *testing.T) 
 		dlqCfg.MaxPendingAge = 15 * time.Minute
 		dlqCfg.ReclaimMinIdle = 20 * time.Millisecond
 
-		cm5, _ := newTestMQ(t, stream5, group5, "node-dlq", dlqCfg, WithCustomGroupHandler(group5, func(context.Context, string, string, redis.XMessage) error {
-			attempts.Add(1)
-			return errors.New("simulated hub delivery failure")
-		}))
+		cm5, _ := newTestMQ(
+			t, stream5, group5, "node-dlq", dlqCfg,
+			WithConsumerStreams(stream5, "", deadStreamMsg, ""),
+			WithCustomGroupHandler(group5, func(context.Context, string, string, redis.XMessage) error {
+				attempts.Add(1)
+				return errors.New("simulated hub delivery failure")
+			}),
+		)
 		// Run attempt 1 directly as initial worker failure.
 		acked, dead, _ := cm5.handleEntry(ctx, stream5, group5, "node-dlq-msg-deliver-1", msgs[0].Messages[0], 1)
 		if acked || dead {
@@ -599,13 +604,15 @@ func TestLiveConsumerDeliveryIdempotencyReclaimDeadLetterAndDrain(t *testing.T) 
 			t.Fatalf("unexpected dead-letter fields: %+v", foundDead.Values)
 		}
 
-		// 3b. >15 minutes age -> dead-lettered on first failure into im:stream:dead:events.
-		// Use StreamEvents directly? Let's use a dedicated test stream and check DeadLetterStream logic via StreamEvents with unique event_id and cleanup!
+		// 3b. >15 minutes age -> dead-lettered on first failure into isolated dead-letter events stream.
 		groupAge := GroupEventAudit
-		oldTS := time.Now().UTC().Add(-16 * time.Minute)
-		oldID := fmt.Sprintf("%d-999", oldTS.UnixMilli())
+		ageTestID := uuid.NewString()
 		// Note: XADD requires ID > last-generated-id on existing stream, so test age with WithConsumerClock(+16m)!
-		streamAge := StreamEvents
+		streamAge := "im:stream:test:age:" + ageTestID
+		deadStreamEvt := "im:stream:test:dead:events:" + ageTestID
+		t.Cleanup(func() {
+			_ = rdb.Del(context.Background(), streamAge, deadStreamEvt).Err()
+		})
 		if err := rdb.XGroupCreateMkStream(ctx, streamAge, groupAge, "0").Err(); err != nil && !isBusyGroupErr(err) {
 			t.Fatal(err)
 		}
@@ -624,10 +631,8 @@ func TestLiveConsumerDeliveryIdempotencyReclaimDeadLetterAndDrain(t *testing.T) 
 			t.Fatal(err)
 		}
 		t.Cleanup(func() {
-			_ = rdb.XDel(context.Background(), streamAge, ageEntryID).Err()
 			_ = rdb.Del(context.Background(), retryMetaKey(streamAge, groupAge, ageEntryID), PendingReclaimKey(streamAge, groupAge)).Err()
 		})
-		_ = oldID
 
 		// Consume the event once with a temp consumer, leave in PEL, then advance clock +16m and reclaim.
 		if _, err := rdb.XReadGroup(ctx, &redis.XReadGroupArgs{
@@ -638,7 +643,6 @@ func TestLiveConsumerDeliveryIdempotencyReclaimDeadLetterAndDrain(t *testing.T) 
 		}).Result(); err != nil {
 			t.Fatal(err)
 		}
-		// Make sure our specific ageEntryID is ACKed if we read other unrelated entries; only fail ageEntryID.
 		time.Sleep(30 * time.Millisecond)
 
 		futureNow := time.Now().UTC().Add(16 * time.Minute)
@@ -648,6 +652,7 @@ func TestLiveConsumerDeliveryIdempotencyReclaimDeadLetterAndDrain(t *testing.T) 
 		ageCfg.ReclaimMinIdle = 20 * time.Millisecond
 		cmAge, _ := newTestMQ(
 			t, streamAge, groupAge, "node-age", ageCfg,
+			WithConsumerStreams("", streamAge, "", deadStreamEvt),
 			WithConsumerClock(func() time.Time { return futureNow }),
 			WithCustomGroupHandler(groupAge, func(_ context.Context, _ string, _ string, msg redis.XMessage) error {
 				if msg.ID == ageEntryID {
@@ -660,20 +665,19 @@ func TestLiveConsumerDeliveryIdempotencyReclaimDeadLetterAndDrain(t *testing.T) 
 			t.Fatalf("ReclaimGroupOnce age failed: %v", err)
 		}
 
-		deadEvts, err := rdb.XRevRangeN(ctx, StreamDeadEvents, "+", "-", 20).Result()
+		deadEvts, err := rdb.XRevRangeN(ctx, deadStreamEvt, "+", "-", 20).Result()
 		if err != nil {
-			t.Fatalf("read %s: %v", StreamDeadEvents, err)
+			t.Fatalf("read %s: %v", deadStreamEvt, err)
 		}
 		var foundAgeDead *redis.XMessage
 		for i := range deadEvts {
 			if deadEvts[i].Values["original_stream_id"] == ageEntryID {
 				foundAgeDead = &deadEvts[i]
-				t.Cleanup(func() { _ = rdb.XDel(context.Background(), StreamDeadEvents, foundAgeDead.ID).Err() })
 				break
 			}
 		}
 		if foundAgeDead == nil {
-			t.Fatalf("expected >15m entry %s in %s", ageEntryID, StreamDeadEvents)
+			t.Fatalf("expected >15m entry %s in %s", ageEntryID, deadStreamEvt)
 		}
 		if foundAgeDead.Values["failure_count"] != "2" || foundAgeDead.Values["event_id"] != evtAgeID {
 			t.Fatalf("unexpected >15m dead-letter entry: %+v", foundAgeDead.Values)
@@ -936,7 +940,18 @@ func TestLiveMySQLAndRedisEndToEndAllFourConsumerGroups(t *testing.T) {
 	mqCfg.BlockTimeout = 200 * time.Millisecond
 	mqCfg.ReclaimInterval = 10 * time.Second
 
-	cm := NewConsumerManager(mqCfg, wsCfg.App.NodeID, rdb, db, hub, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	testMsgsStream := "im:stream:test:mq:messages:" + suffix
+	testEvtsStream := "im:stream:test:mq:events:" + suffix
+	testDeadMsgsStream := "im:stream:test:mq:dead:messages:" + suffix
+	testDeadEvtsStream := "im:stream:test:mq:dead:events:" + suffix
+	t.Cleanup(func() {
+		_ = rdb.Del(context.Background(), testMsgsStream, testEvtsStream, testDeadMsgsStream, testDeadEvtsStream).Err()
+	})
+
+	cm := NewConsumerManager(
+		mqCfg, wsCfg.App.NodeID, rdb, db, hub, slog.New(slog.NewTextHandler(io.Discard, nil)),
+		WithConsumerStreams(testMsgsStream, testEvtsStream, testDeadMsgsStream, testDeadEvtsStream),
+	)
 	if err := cm.Start(ctx); err != nil {
 		t.Fatalf("start all 4 consumer groups: %v", err)
 	}
@@ -946,7 +961,7 @@ func TestLiveMySQLAndRedisEndToEndAllFourConsumerGroups(t *testing.T) {
 		_ = cm.Drain(dCtx)
 	})
 
-	producer := NewProducer(rdb, mqCfg, nil)
+	producer := NewProducer(rdb, mqCfg, nil, WithProducerStreams(testMsgsStream, testEvtsStream))
 	msgStreamID, err := producer.PublishMessage(ctx, MessageRecord{
 		MessageID:      msgID,
 		ConversationID: conv.ID,
@@ -981,8 +996,8 @@ func TestLiveMySQLAndRedisEndToEndAllFourConsumerGroups(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		c := context.Background()
-		_ = rdb.XDel(c, StreamMessages, msgStreamID).Err()
-		_ = rdb.XDel(c, StreamEvents, evtStreamID).Err()
+		_ = rdb.XDel(c, testMsgsStream, msgStreamID).Err()
+		_ = rdb.XDel(c, testEvtsStream, evtStreamID).Err()
 		_ = rdb.Del(c,
 			doneKey(GroupMsgPersist, "sid:"+msgStreamID),
 			doneKey(GroupMsgDeliver, "sid:"+msgStreamID),
@@ -1094,7 +1109,7 @@ func TestLiveMySQLAndRedisEndToEndAllFourConsumerGroups(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		c := context.Background()
-		_ = rdb.XDel(c, StreamEvents, recStreamID1, recStreamID2).Err()
+		_ = rdb.XDel(c, testEvtsStream, recStreamID1, recStreamID2).Err()
 		_ = rdb.Del(c,
 			doneKey(GroupEventDeliver, "sid:"+recStreamID1),
 			doneKey(GroupEventDeliver, "sid:"+recStreamID2),

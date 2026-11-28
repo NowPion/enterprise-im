@@ -113,3 +113,11 @@
   - `cd backend && go vet ./... && go build ./... && go test -p 1 -count=1 -race ./internal/repository ./internal/service ./internal/controller ./internal/api ./cmd/server`：退出码 **`0`**。
   - `cd frontend && npm run typecheck && npm test`：退出码 **`0`**（`25/25` 通过）。
   - `cd frontend && IM_VITE_PORT=5177 IM_BACKEND_ORIGIN=http://127.0.0.1:8084 npm run test:e2e:admin`：退出码 **`0`**（Chromium 4 用例 + Firefox 2 用例共 **6/6** 通过），详细报告与截图见 [docs/stage9/admin.md](docs/stage9/admin.md)。
+
+## 十、第十阶段进展（自动化测试与千人压测）· 2026-11-28
+
+- **基线**：`main` `e5a9069`。三个作者分支已无冲突合入 [`agent/stage10-integration`](docs/test-report.md)（`--no-ff`），**尚未合入 `main`，也未推送**。
+- **后端**（`agent/stage10-backend-tests`：`e080e55`、`c477065`、`da5ead7`、`8ba9904`）：在隔离库中以默认包并发执行 `go vet ./... && go test -race -count=1 ./...`（未加 `-p 1`），16 / 16 包通过，0 data race。补齐认证踢下线、多端 WS 并发与事务回滚 live 测试；生产代码仅增加默认关闭的 Redis Streams / Presence 隔离 option，以修复跨包测试污染（原 MAJOR-1）。
+- **前端**（`agent/stage10-frontend-tests`：`f2aa307`）：`npx vitest run` 7 文件 45 / 45 通过，`npx vue-tsc --noEmit` 通过。覆盖 Store 增量更新、WSClient 重连、未读数与群管。
+- **压测**（`agent/stage10-loadtest`：`03a3cc1`、`3b6b9a5`、`d7f41ba`）：新增 `backend/cmd/loadtest`。隔离实例 `:8088` 上第二轮 1000 真实用户 / 1000 条 WS 长连接通过（发送 4000、推送 44000，丢失 / 重复 / 乱序均为 0，断连后 153ms 归零）。第一轮默认连接池与突发发送失败（227 次异常断开，丢包约 25%）。未修改压测目标预览栈 `:8080` / `:5173`。
+- **报告**：[docs/test-report.md](docs/test-report.md)。第 11 阶段未开始。

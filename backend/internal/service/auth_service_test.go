@@ -18,16 +18,18 @@ import (
 )
 
 type memoryAuthStore struct {
-	mu           sync.Mutex
-	nextUserID   uint64
-	nextSessID   uint64
-	users        map[uint64]*model.User
-	usersByName  map[string]uint64
-	sessions     map[uint64]*model.UserSession
-	blacklist    map[string]string
-	refreshLocks map[string]string
-	onlineUsers  map[uint64]bool
-	txDelay      time.Duration
+	mu                  sync.Mutex
+	nextUserID          uint64
+	nextSessID          uint64
+	users               map[uint64]*model.User
+	usersByName         map[string]uint64
+	sessions            map[uint64]*model.UserSession
+	blacklist           map[string]string
+	refreshLocks        map[string]string
+	onlineUsers         map[uint64]bool
+	txDelay             time.Duration
+	txGate              <-chan struct{}
+	onAcquireLockResult func(acquired bool)
 }
 
 func newMemoryAuthStore() *memoryAuthStore {
@@ -76,6 +78,13 @@ type memoryAuthTx struct {
 }
 
 func (m *memoryAuthStore) WithTx(_ context.Context, fn func(tx AuthTxStore) error) error {
+	if m.txGate != nil {
+		select {
+		case <-m.txGate:
+		case <-time.After(2 * time.Second):
+		}
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -170,12 +179,21 @@ func (m *memoryAuthStore) BlacklistAccessJTIs(_ context.Context, jtis []string, 
 
 func (m *memoryAuthStore) AcquireRefreshLock(_ context.Context, refreshHash string, _ time.Duration) (string, bool, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if _, exists := m.refreshLocks[refreshHash]; exists {
+		cb := m.onAcquireLockResult
+		m.mu.Unlock()
+		if cb != nil {
+			cb(false)
+		}
 		return "", false, nil
 	}
 	tok := "lock-" + refreshHash
 	m.refreshLocks[refreshHash] = tok
+	cb := m.onAcquireLockResult
+	m.mu.Unlock()
+	if cb != nil {
+		cb(true)
+	}
 	return tok, true, nil
 }
 
@@ -500,10 +518,19 @@ func TestAuthServiceConcurrentRefreshConflictReturns11008(t *testing.T) {
 		t.Fatalf("Login failed: %v", bizErr)
 	}
 
-	// Add slight tx delay so concurrent callers genuinely contend while the winner holds the lock.
-	store.txDelay = 15 * time.Millisecond
-
 	const workers = 8
+	// Gate the single lock-winning tx until all concurrent workers hit AcquireRefreshLock
+	// so scheduling jitter under -race never causes late workers to see a post-rotation token (11003).
+	gate := make(chan struct{})
+	var closeOnce sync.Once
+	var lockConflicts atomic.Int32
+	store.txGate = gate
+	store.onAcquireLockResult = func(acquired bool) {
+		if !acquired && lockConflicts.Add(1) == workers-1 {
+			closeOnce.Do(func() { close(gate) })
+		}
+	}
+
 	start := make(chan struct{})
 	var wg sync.WaitGroup
 	var successCount atomic.Int32

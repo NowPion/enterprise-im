@@ -1133,7 +1133,7 @@ func TestLiveMessageServiceStage7ReliabilityIntegration(t *testing.T) {
 	rdb, err := repository.NewRedis(config.RedisConfig{
 		Addr:         redisAddr,
 		Password:     redisPass,
-		DB:           0,
+		DB:           testServiceRedisDB(),
 		PoolSize:     20,
 		MinIdleConns: 2,
 		DialTimeout:  3 * time.Second,
@@ -1177,6 +1177,8 @@ func TestLiveMessageServiceStage7ReliabilityIntegration(t *testing.T) {
 		t.Fatalf("create conv members: %v", err)
 	}
 
+	testMsgsStream := fmt.Sprintf("im:stream:test:svc:messages:%d", suffix)
+	testEvtsStream := fmt.Sprintf("im:stream:test:svc:events:%d", suffix)
 	var dedupeKeys []string
 	var streamMsgIDs []string
 	var streamEvtIDs []string
@@ -1194,11 +1196,12 @@ func TestLiveMessageServiceStage7ReliabilityIntegration(t *testing.T) {
 			_ = rdb.Del(cleanupCtx, dedupeKeys...).Err()
 		}
 		if len(streamMsgIDs) > 0 {
-			_ = rdb.XDel(cleanupCtx, repository.StreamMessagesKey, streamMsgIDs...).Err()
+			_ = rdb.XDel(cleanupCtx, testMsgsStream, streamMsgIDs...).Err()
 		}
 		if len(streamEvtIDs) > 0 {
-			_ = rdb.XDel(cleanupCtx, repository.StreamEventsKey, streamEvtIDs...).Err()
+			_ = rdb.XDel(cleanupCtx, testEvtsStream, streamEvtIDs...).Err()
 		}
+		_ = rdb.Del(cleanupCtx, testMsgsStream, testEvtsStream).Err()
 	}()
 
 	convRepo := repository.NewConversationRepository(db)
@@ -1209,7 +1212,7 @@ func TestLiveMessageServiceStage7ReliabilityIntegration(t *testing.T) {
 		t.Fatalf("snowflake: %v", err)
 	}
 	broadcaster := &testBroadcaster{}
-	livePub := &svcStreamAdapter{pub: repository.NewRedisStreamPublisher(rdb)}
+	livePub := &svcStreamAdapter{pub: repository.NewRedisStreamPublisher(rdb, repository.WithStreamKeys(testMsgsStream, testEvtsStream))}
 	switchPub := &failingStreamPublisher{inner: livePub}
 
 	svc := NewMessageService(convRepo, msgRepo, seqAlloc, idGen, broadcaster, 2*time.Minute, log)
@@ -1347,7 +1350,7 @@ func TestLiveMessageServiceStage7ReliabilityIntegration(t *testing.T) {
 
 	// 7. Verify Redis Streams entries were XADDed and collect IDs for cleanup.
 	convStr := strconv.FormatUint(conv.ID, 10)
-	if entries, xErr := rdb.XRevRangeN(ctx, repository.StreamMessagesKey, "+", "-", 20).Result(); xErr != nil {
+	if entries, xErr := rdb.XRevRangeN(ctx, testMsgsStream, "+", "-", 20).Result(); xErr != nil {
 		t.Fatalf("XRevRangeN messages: %v", xErr)
 	} else {
 		var msgStreamCount int
@@ -1358,10 +1361,10 @@ func TestLiveMessageServiceStage7ReliabilityIntegration(t *testing.T) {
 			}
 		}
 		if msgStreamCount < 4 {
-			t.Fatalf("expected at least 4 entries in %s for conv %d, got %d", repository.StreamMessagesKey, conv.ID, msgStreamCount)
+			t.Fatalf("expected at least 4 entries in %s for conv %d, got %d", testMsgsStream, conv.ID, msgStreamCount)
 		}
 	}
-	if evts, xErr := rdb.XRevRangeN(ctx, repository.StreamEventsKey, "+", "-", 20).Result(); xErr != nil {
+	if evts, xErr := rdb.XRevRangeN(ctx, testEvtsStream, "+", "-", 20).Result(); xErr != nil {
 		t.Fatalf("XRevRangeN events: %v", xErr)
 	} else {
 		var recallEvtFound bool
@@ -1372,9 +1375,20 @@ func TestLiveMessageServiceStage7ReliabilityIntegration(t *testing.T) {
 			}
 		}
 		if !recallEvtFound {
-			t.Fatalf("expected recall event in %s for conv %d", repository.StreamEventsKey, conv.ID)
+			t.Fatalf("expected recall event in %s for conv %d", testEvtsStream, conv.ID)
 		}
 	}
+}
+
+func testServiceRedisDB() int {
+	for _, key := range []string{"IM_REDIS_DB", "REDIS_DB"} {
+		if v := os.Getenv(key); v != "" {
+			if parsed, err := strconv.Atoi(v); err == nil && parsed >= 0 {
+				return parsed
+			}
+		}
+	}
+	return 0
 }
 
 func firstNonEmpty(vals ...string) string {

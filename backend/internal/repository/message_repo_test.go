@@ -172,7 +172,7 @@ func TestLiveMessageRepoDedupeConvSeqAndStreamsIntegration(t *testing.T) {
 	rdb, err := NewRedis(config.RedisConfig{
 		Addr:         redisAddr,
 		Password:     redisPass,
-		DB:           0,
+		DB:           testLiveRedisDB(),
 		PoolSize:     5,
 		MinIdleConns: 1,
 		DialTimeout:  3 * time.Second,
@@ -187,14 +187,16 @@ func TestLiveMessageRepoDedupeConvSeqAndStreamsIntegration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
+	suffix := uint64(time.Now().UnixNano())
+	testMsgsStream := fmt.Sprintf("im:stream:test:repo:messages:%d", suffix)
+	testEvtsStream := fmt.Sprintf("im:stream:test:repo:events:%d", suffix)
 	repo := NewMessageRepository(db, rdb)
-	pub := NewRedisStreamPublisher(rdb)
+	pub := NewRedisStreamPublisher(rdb, WithStreamKeys(testMsgsStream, testEvtsStream))
 	gen, err := snowflake.NewGenerator(1)
 	if err != nil {
 		t.Fatalf("snowflake: %v", err)
 	}
 
-	suffix := uint64(time.Now().UnixNano())
 	convID := suffix
 	senderID := suffix + 1
 	clientMsgID := fmt.Sprintf("live-repo-cmsg-%d", suffix)
@@ -210,11 +212,12 @@ func TestLiveMessageRepoDedupeConvSeqAndStreamsIntegration(t *testing.T) {
 		defer c()
 		_ = db.WithContext(cleanupCtx).Where("conversation_id = ?", convID).Delete(&model.Message{}).Error
 		_ = rdb.Del(cleanupCtx, DedupeKey(senderID, clientMsgID), DedupeLockKey(senderID, clientMsgID)).Err()
+		_ = rdb.Del(cleanupCtx, testMsgsStream, testEvtsStream).Err()
 		if len(streamMsgIDs) > 0 {
-			_ = rdb.XDel(cleanupCtx, StreamMessagesKey, streamMsgIDs...).Err()
+			_ = rdb.XDel(cleanupCtx, testMsgsStream, streamMsgIDs...).Err()
 		}
 		if len(streamEvtIDs) > 0 {
-			_ = rdb.XDel(cleanupCtx, StreamEventsKey, streamEvtIDs...).Err()
+			_ = rdb.XDel(cleanupCtx, testEvtsStream, streamEvtIDs...).Err()
 		}
 	}()
 
@@ -294,7 +297,7 @@ func TestLiveMessageRepoDedupeConvSeqAndStreamsIntegration(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("PublishMessage failed: %v", err)
 	}
-	msgs, err := rdb.XRevRangeN(ctx, StreamMessagesKey, "+", "-", 10).Result()
+	msgs, err := rdb.XRevRangeN(ctx, testMsgsStream, "+", "-", 10).Result()
 	if err != nil {
 		t.Fatalf("XRevRangeN messages: %v", err)
 	}
@@ -312,7 +315,7 @@ func TestLiveMessageRepoDedupeConvSeqAndStreamsIntegration(t *testing.T) {
 		}
 	}
 	if !matchedMsg {
-		t.Fatalf("expected published entry in %s for message_id=%d", StreamMessagesKey, msgID)
+		t.Fatalf("expected published entry in %s for message_id=%d", testMsgsStream, msgID)
 	}
 
 	if err := pub.PublishEvent(ctx, StreamEventInput{
@@ -332,7 +335,7 @@ func TestLiveMessageRepoDedupeConvSeqAndStreamsIntegration(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("PublishEvent failed: %v", err)
 	}
-	evts, err := rdb.XRevRangeN(ctx, StreamEventsKey, "+", "-", 10).Result()
+	evts, err := rdb.XRevRangeN(ctx, testEvtsStream, "+", "-", 10).Result()
 	if err != nil {
 		t.Fatalf("XRevRangeN events: %v", err)
 	}
@@ -348,6 +351,6 @@ func TestLiveMessageRepoDedupeConvSeqAndStreamsIntegration(t *testing.T) {
 		}
 	}
 	if !matchedEvt {
-		t.Fatalf("expected published recall event in %s for message_id=%d", StreamEventsKey, msgID)
+		t.Fatalf("expected published recall event in %s for message_id=%d", testEvtsStream, msgID)
 	}
 }

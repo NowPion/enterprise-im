@@ -1,6 +1,13 @@
 import assert from 'node:assert/strict'
 import { mock } from 'node:test'
-import { WSClient, type Transport } from '../src/utils/wsClient.ts'
+import {
+  createSharedWSClient,
+  getSharedWSClient,
+  onSharedWSClientReset,
+  resetSharedWSClient,
+  WSClient,
+  type Transport,
+} from '../src/utils/wsClient.ts'
 
 class Socket implements Transport {
   readyState = 0
@@ -559,4 +566,183 @@ it('closes socket and emits transport error when socket.send throws synchronousl
   assert.deepEqual(errors, ['transport'])
   assert.equal(closes.length, 1)
   client.disconnect()
+})
+
+it('recovers immediately via clearAuthRejectionAndRetry both during active backoff and after maxAuthFailures', () => {
+  let token = 'bad-1'
+  const { client, sockets, urls } = setup({ getAccessToken: () => token, maxAuthFailures: 2 })
+
+  // Case 1: active backoff after 1st auth failure -> clearAuthRejectionAndRetry dials immediately
+  client.connect()
+  sockets[0].open()
+  sockets[0].receive(frame('error', { code: 18001, message: 'expired' }))
+  sockets[0].close(1008, '18001')
+  assert.equal(sockets.length, 1)
+
+  token = 'rotated-token-1'
+  client.clearAuthRejectionAndRetry()
+  assert.equal(sockets.length, 2)
+  assert.equal(urls[1].searchParams.get('access_token'), 'rotated-token-1')
+  sockets[1].open()
+  authenticateSocket(sockets[1])
+  assert.equal(client.isConnected, true)
+
+  // Case 2: exhaust maxAuthFailures=2 (stops retrying), then recover with clearAuthRejectionAndRetry
+  sockets[1].close()
+  token = 'bad-2'
+  mock.timers.tick(500)
+  assert.equal(sockets.length, 3)
+  sockets[2].failPre101()
+
+  token = 'bad-3'
+  mock.timers.tick(1000)
+  assert.equal(sockets.length, 4)
+  sockets[3].failPre101()
+
+  token = 'still-stopped'
+  mock.timers.tick(30000)
+  assert.equal(sockets.length, 4)
+
+  token = 'recovered-after-stop'
+  client.clearAuthRejectionAndRetry()
+  assert.equal(sockets.length, 5)
+  assert.equal(urls[4].searchParams.get('access_token'), 'recovered-after-stop')
+  sockets[4].open()
+  authenticateSocket(sockets[4])
+  assert.equal(client.isConnected, true)
+  client.disconnect()
+})
+
+it('treats repeated pre-open closes with unchanged token and unframed 1008 close as auth rejections', () => {
+  let token = 'stale-token'
+  const { client, sockets } = setup({ getAccessToken: () => token, maxAuthFailures: 3 })
+  const errors: string[] = []
+  client.on('error', err => errors.push(err.kind))
+
+  // Two pre-open closes WITHOUT onerror still lock the unchanged token as repeatedPreOpenClose
+  client.connect()
+  sockets[0].close(1006, 'abrupt')
+  mock.timers.tick(500)
+  assert.equal(sockets.length, 2)
+  sockets[1].close(1006, 'abrupt')
+
+  for (const ms of [1000, 2000, 4000, 8000, 16000]) {
+    mock.timers.tick(ms)
+  }
+  assert.equal(sockets.length, 2)
+
+  // Unframed 1008 before authentication emits protocol error and blocks token reuse
+  client.disconnect()
+  token = 'unframed-1008-token'
+  client.connect()
+  sockets[2].open()
+  sockets[2].close(1008, 'policy violation')
+  assert.deepEqual(errors, ['protocol'])
+  mock.timers.tick(500)
+  assert.equal(sockets.length, 3)
+  client.disconnect()
+})
+
+it('sends delivered/read/recall ACKs only when authenticated and manages per-account pending queue', () => {
+  let token = makeJwt('1001', 'jti-1')
+  const { client, sockets } = setup({ getAccessToken: () => token })
+
+  assert.throws(() => client.enqueue(message({ client_msg_id: '' }), 'req-bad'), /Missing message identity/)
+  assert.throws(() => client.sendDeliveredAck({ msg_id: '', conversation_id: '9', seq: '1' }), /Missing delivered_ack identity/)
+  assert.throws(() => client.sendReadAck({ conversation_id: '', last_read_seq: '1' }), /Missing read_ack identity/)
+  assert.throws(() => client.sendRecall({ conversation_id: '9', msg_id: '' }), /Missing recall identity/)
+
+  // Before authenticated open, ACK/recall helpers return null and retryPending returns false
+  assert.equal(client.sendDeliveredAck({ msg_id: '10', conversation_id: '9', seq: '1' }), null)
+  assert.equal(client.sendReadAck({ conversation_id: '9', last_read_seq: '1' }), null)
+  assert.equal(client.sendRecall({ conversation_id: '9', msg_id: '10' }), null)
+
+  client.enqueue(message({ conversation_id: '9', client_msg_id: 'c-9' }), 'req-9')
+  client.enqueue(message({ conversation_id: '10', client_msg_id: 'c-10' }), 'req-10')
+  assert.throws(() => client.enqueue(message({ conversation_id: '9', client_msg_id: 'c-dup' }), 'req-9'), /Duplicate pending req_id/)
+  assert.equal(client.hasPending('req-9'), true)
+  assert.equal(client.retryPending('req-9'), false)
+  assert.deepEqual(client.getPendingMessages('9').map(m => m.client_msg_id), ['c-9'])
+  assert.deepEqual(client.getPendingMessages().map(m => m.req_id), ['req-9', 'req-10'])
+
+  assert.equal(client.removePending('req-10'), true)
+  assert.equal(client.removePending('req-missing'), false)
+
+  client.connect()
+  sockets[0].open()
+  // Still unauthenticated before pong
+  assert.equal(client.sendReadAck({ conversation_id: '9', last_read_seq: '1' }), null)
+  authenticateSocket(sockets[0])
+
+  assert.equal(client.retryPending('req-9'), true)
+  assert.equal(client.sendDeliveredAck({ msg_id: '11', conversation_id: '9', seq: '2' }, 'req-del'), 'req-del')
+  assert.equal(client.sendReadAck({ conversation_id: '9', last_read_seq: '2' }, 'req-read'), 'req-read')
+  assert.equal(client.sendRecall({ conversation_id: '9', msg_id: '11' }, 'req-recall'), 'req-recall')
+
+  const types = sockets[0].sent.map(raw => JSON.parse(raw).type)
+  assert.deepEqual(types, ['ping', 'msg.send', 'msg.send', 'msg.delivered_ack', 'msg.read_ack', 'msg.recall'])
+
+  // Account switch isolates getPendingMessages
+  token = makeJwt('2002', 'jti-2')
+  assert.deepEqual(client.getPendingMessages(), [])
+  assert.equal(client.hasPending('req-9'), false)
+  client.disconnect()
+})
+
+it('updates dynamic options and manages shared WSClient singleton and reset listeners safely', () => {
+  resetSharedWSClient()
+  assert.equal(getSharedWSClient(), null)
+
+  const sockets: Socket[] = []
+  const urls: URL[] = []
+  let token = makeJwt('1001', 'jti-1')
+  let seqMap: Record<string, string> = { '1': '5' }
+
+  const shared1 = createSharedWSClient({
+    origin: 'https://im.example',
+    getAccessToken: () => token,
+    getAccountId: () => '1001',
+    getLastSeq: () => seqMap,
+    createSocket(url) {
+      urls.push(new URL(url))
+      const socket = new Socket()
+      sockets.push(socket)
+      return socket
+    },
+  })
+  assert.equal(getSharedWSClient(), shared1)
+
+  let nextToken = makeJwt('1001', 'jti-2')
+  const shared2 = createSharedWSClient({
+    origin: 'https://im.example',
+    getAccessToken: () => nextToken,
+    getAccountId: () => '1001',
+    getLastSeq: () => ({ '1': '9' }),
+  })
+  assert.equal(shared2, shared1)
+
+  shared1.connect()
+  assert.equal(urls[0].searchParams.get('access_token'), nextToken)
+  sockets[0].open()
+  const probe = authenticateSocket(sockets[0])
+  assert.deepEqual(probe.data.last_seq, { '1': '9' })
+  assert.equal(shared1.isConnected, true)
+
+  const resetCalls: string[] = []
+  const offThrowing = onSharedWSClientReset(() => {
+    resetCalls.push('throwing')
+    throw new Error('listener failure')
+  })
+  const offHealthy = onSharedWSClientReset(() => {
+    resetCalls.push('healthy')
+    // Reentrant reset call should be a no-op
+    resetSharedWSClient()
+  })
+
+  resetSharedWSClient()
+  assert.equal(getSharedWSClient(), null)
+  assert.equal(shared1.isConnected, false)
+  assert.deepEqual(resetCalls, ['throwing', 'healthy'])
+  offThrowing()
+  offHealthy()
 })

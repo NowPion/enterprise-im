@@ -390,7 +390,7 @@ func openLiveDepsForRepoTest(t *testing.T) (*gorm.DB, *redis.Client, func()) {
 	rdb, err := NewRedis(config.RedisConfig{
 		Addr:         redisAddr,
 		Password:     redisPass,
-		DB:           0,
+		DB:           testLiveRedisDB(),
 		PoolSize:     5,
 		MinIdleConns: 1,
 		DialTimeout:  3 * time.Second,

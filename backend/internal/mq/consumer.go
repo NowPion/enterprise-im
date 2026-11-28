@@ -80,7 +80,26 @@ func WithPersistHook(fn PersistHook) ConsumerOption {
 func WithGroups(targets ...StreamGroup) ConsumerOption {
 	return func(cm *ConsumerManager) {
 		if len(targets) > 0 {
+			cm.hasCustomGroups = true
 			cm.targets = append([]StreamGroup(nil), targets...)
+		}
+	}
+}
+
+// WithConsumerStreams overrides the message, event, and dead-letter stream keys (primarily for isolated tests).
+func WithConsumerStreams(messagesStream, eventsStream, deadMessagesStream, deadEventsStream string) ConsumerOption {
+	return func(cm *ConsumerManager) {
+		if s := strings.TrimSpace(messagesStream); s != "" {
+			cm.messagesStream = s
+		}
+		if s := strings.TrimSpace(eventsStream); s != "" {
+			cm.eventsStream = s
+		}
+		if s := strings.TrimSpace(deadMessagesStream); s != "" {
+			cm.deadMessagesStream = s
+		}
+		if s := strings.TrimSpace(deadEventsStream); s != "" {
+			cm.deadEventsStream = s
 		}
 	}
 }
@@ -124,11 +143,16 @@ type ConsumerManager struct {
 	auditStore     AuditStore
 	producer       *StreamProducer
 	log            *slog.Logger
-	nowFn          func() time.Time
-	targets        []StreamGroup
-	customHandlers map[string]HandlerFunc
-	msgResolver    MessageResolver
-	persistHook    PersistHook
+	nowFn              func() time.Time
+	targets            []StreamGroup
+	hasCustomGroups    bool
+	messagesStream     string
+	eventsStream       string
+	deadMessagesStream string
+	deadEventsStream   string
+	customHandlers     map[string]HandlerFunc
+	msgResolver        MessageResolver
+	persistHook        PersistHook
 
 	mu             sync.Mutex
 	started        bool
@@ -172,7 +196,8 @@ func NewConsumerManager(
 		hub:            hub,
 		log:            log,
 		nowFn:          func() time.Time { return time.Now().UTC() },
-		targets:        DefaultStreamGroups(),
+		messagesStream: StreamMessages,
+		eventsStream:   StreamEvents,
 		reclaimCursors: make(map[string]string),
 	}
 	if db != nil {
@@ -184,8 +209,32 @@ func NewConsumerManager(
 			opt(cm)
 		}
 	}
-	cm.producer = NewProducer(rdb, normalizedCfg, log, WithProducerClock(cm.nowFn))
+	if !cm.hasCustomGroups {
+		cm.targets = []StreamGroup{
+			{Stream: cm.messagesStream, Group: GroupMsgPersist},
+			{Stream: cm.messagesStream, Group: GroupMsgDeliver},
+			{Stream: cm.eventsStream, Group: GroupEventDeliver},
+			{Stream: cm.eventsStream, Group: GroupEventAudit},
+		}
+	}
+	cm.producer = NewProducer(
+		rdb,
+		normalizedCfg,
+		log,
+		WithProducerClock(cm.nowFn),
+		WithProducerStreams(cm.messagesStream, cm.eventsStream),
+	)
 	return cm
+}
+
+func (cm *ConsumerManager) deadLetterStream(stream string) string {
+	if (stream == cm.eventsStream || stream == StreamEvents) && cm.deadEventsStream != "" {
+		return cm.deadEventsStream
+	}
+	if (stream == cm.messagesStream || stream == StreamMessages) && cm.deadMessagesStream != "" {
+		return cm.deadMessagesStream
+	}
+	return DeadLetterStream(stream)
 }
 
 // EnsureGroups creates all configured consumer groups idempotently (`XGROUP CREATE ... 0 MKSTREAM`).
@@ -639,7 +688,7 @@ func (cm *ConsumerManager) sendToDeadLetterAndAck(
 	errSummary string,
 	retryKey string,
 ) error {
-	deadStream := DeadLetterStream(stream)
+	deadStream := cm.deadLetterStream(stream)
 	payloadJSON, _ := json.Marshal(msg.Values)
 	values := map[string]any{
 		"source_stream":      stream,
