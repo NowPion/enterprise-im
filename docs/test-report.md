@@ -1,13 +1,67 @@
-# Enterprise IM 测试与千级 WebSocket 压测报告（初稿）
+# Enterprise IM 测试与千级 WebSocket 压测报告
 
-> **阶段说明**：本文档为第十阶段压测部分初稿，覆盖基于 [`backend/cmd/loadtest`](../backend/cmd/loadtest/main.go) 的 **1000 真实 WebSocket 客户端**并发压测实测数据与诊断结论。后端自动化单测 / 集成测试（`go test -race ./...`）与前端 Vitest 测试结果由并行测试分支负责，**待第十阶段集成合并后在本报告第 1、2 节补全**。
+> **阶段说明**：本文档覆盖第十阶段全部验收范围：后端 `go test -race ./...`（默认包并发，未加 `-p 1`）、前端 Vitest 核心交互单测，以及基于 [`backend/cmd/loadtest`](../backend/cmd/loadtest/main.go) 的 **1000 真实 WebSocket 客户端**并发压测。三个作者分支已无冲突合入 `agent/stage10-integration`（基线 `main` `e5a9069`），**尚未合入 `main`，也未推送**。文中不记录任何数据库口令、JWT 或测试账号密码。
 
 ---
 
-## 一、自动化单元与集成测试（待集成补全）
+## 一、自动化单元与集成测试
 
-- **后端单元与集成测试（`go test -race ./...`）**：*待并行测试代理分支合入后补全。*
-- **前端核心交互测试（Vitest）**：*待并行测试代理分支合入后补全。*
+独立复核于 2026-11-28 14:16–14:22（Asia/Shanghai）在作者分支上完成；随后将 `agent/stage10-backend-tests`、`agent/stage10-frontend-tests`、`agent/stage10-loadtest` 以 `--no-ff` 合入本集成分支，三路文件无重叠、无冲突。预览栈 `:8080` / `:5173` / `enterprise_im` 全程未作为测试目标，复核结束后隔离库与隔离 Redis DB 已清理，预览 `/healthz` 与前端入口仍返回 HTTP 200。
+
+### 1. 后端（`go vet ./...` + `go test -race -count=1 ./...`）
+
+- **工作树**：`agent/stage10-backend-tests`（提交 `e080e55`、`c477065`、`da5ead7`、`8ba9904`）。
+- **隔离**：临时库 `im_stage10_verify`（由 `deploy/mysql/init.sql` 改写库名后导入），`REDIS_DB=14`。凭据仅在运行时从 Docker 环境注入，不落盘、不写入本报告。
+- **命令**：在 `backend/` 下执行 `go vet ./...`（exit 0），再以**默认包并发调度**执行 `go test -race -count=1 ./...`（**未加 `-p 1`**）。
+- **结果**：exit 0；**16 / 16 个包通过**；**0 失败**；**0 次 `-race` data race**。耗时约 2 分 42 秒（14:19:45–14:22:27 Asia/Shanghai）。
+
+| 包 | 结果 | 耗时 |
+| :--- | :--- | :--- |
+| `enterprise-im/backend/cmd/server` | PASS | 3.099s |
+| `enterprise-im/backend/internal/api` | PASS | 3.029s |
+| `enterprise-im/backend/internal/config` | PASS | 2.303s |
+| `enterprise-im/backend/internal/controller` | PASS | 5.116s |
+| `enterprise-im/backend/internal/middleware` | PASS | 4.952s |
+| `enterprise-im/backend/internal/model` | PASS | 6.348s |
+| `enterprise-im/backend/internal/mq` | PASS | 8.301s |
+| `enterprise-im/backend/internal/pkg/errcode` | PASS | 5.462s |
+| `enterprise-im/backend/internal/pkg/jwt` | PASS | 5.878s |
+| `enterprise-im/backend/internal/pkg/logger` | PASS | 6.769s |
+| `enterprise-im/backend/internal/pkg/password` | PASS | 8.004s |
+| `enterprise-im/backend/internal/pkg/snowflake` | PASS | 4.575s |
+| `enterprise-im/backend/internal/repository` | PASS | 8.990s |
+| `enterprise-im/backend/internal/service` | PASS | 15.843s |
+| `enterprise-im/backend/internal/ws` | PASS | 4.759s |
+| `enterprise-im/backend/tests` | PASS | 152.169s |
+
+覆盖范围（真实 MySQL 8、真实 Redis 7、真实 WebSocket / `cmd/server`，持久化与投递断言未使用 Mock）：
+
+1. **用户认证**：注册、登录、改密、Token 刷新与吊销、管理员禁用踢下线（含多端 WS 收到 `18006` / `system.notice` 后以 `1008` 关闭，以及恢复启用）。既有 Stage 4/5 用例外，新增 [`backend/tests/stage10_auth_ws_test.go`](../backend/tests/stage10_auth_ws_test.go) 中的 `TestStage10AuthAdminDisableAndKickLiveWS`。顺带修复 `TestLiveUserRepositoryAndPresenceIntegration` 的禁用用户种子（GORM `default:1` 会吞掉 Go 零值），以及刷新并发用例在 `-race` 下的确定性门闩。
+2. **好友管理**：申请、防重、同意事务建会话、拒绝、删除、备注（既有 Stage 4 用例；live 测试改为读取 `IM_REDIS_DB` / `REDIS_DB`，不再写死 Redis DB 0）。
+3. **消息发送**：文本与媒体元数据、单聊持久化、撤回时限与权限（既有 Stage 6 用例）。
+4. **消息幂等**：同一 `client_msg_id` 并发重发 10 次只入库 1 条且 `msg_id` / `seq` 一致（既有 `TestStage7IdempotencyConcurrent10xAndFallback`）。
+5. **WebSocket 并发连接**：多端同账号注册 / 断开并发安全。新增 `TestStage10ConcurrentWSRegistrationAndDisconnectRace`；Presence / Hub 测试增加 `WithPresenceKeyPrefix`，避免跨包抢租约。
+6. **群广播**：创建、权限、成员收发与移除后停止接收（既有 Stage 6 群聊用例）。
+7. **断线重连与离线补拉**：按 `seq` 补齐、不丢、不重（既有 Stage 7 断线补偿与 Streams 用例）。
+8. **事务回滚**：新增 [`backend/internal/service/transaction_rollback_live_test.go`](../backend/internal/service/transaction_rollback_live_test.go)，在好友同意建会话、创建群聊、发送消息三类多表事务中途失败后，确认 MySQL 无脏行，且 Redis `conv:seq` / `im:dedupe` 一并回滚。
+
+为消除默认并发 `go test -race ./...` 下的跨包 Redis Streams / Presence 污染（原 MAJOR-1），生产代码仅增加**可选、默认关闭**的隔离 option：`WithStreamKeys`、`WithPresenceKeyPrefix`、`WithProducerStreams`、`WithConsumerStreams`。零 option 时 Redis 键名、PubSub 频道与四个消费组保持原生产行为不变。
+
+### 2. 前端（Vitest + `vue-tsc`）
+
+- **工作树**：`agent/stage10-frontend-tests`（提交 `f2aa307`）。
+- **命令**：在 `frontend/` 下执行 `npx vitest run` 与 `npx vue-tsc --noEmit`。未改动 `frontend/e2e/**`。
+- **结果**（2026-11-28 14:16:11 Asia/Shanghai）：Vitest v3.2.7，**7 个文件、45 / 45 通过**，exit 0，耗时 1.49s；`vue-tsc --noEmit` exit 0。
+
+| 文件 | 用例数 | 覆盖要点 |
+| :--- | :--- | :--- |
+| [`frontend/tests/wsClient.spec.ts`](../frontend/tests/wsClient.spec.ts) | 18 | WSClient 连接、心跳、重连 |
+| [`frontend/tests/stores/messageStore.spec.ts`](../frontend/tests/stores/messageStore.spec.ts) | 9 | Pinia 消息增量更新 |
+| [`frontend/tests/stores/conversationUnread.spec.ts`](../frontend/tests/stores/conversationUnread.spec.ts) | 7 | 未读数逻辑 |
+| [`frontend/tests/stores/authAndContact.spec.ts`](../frontend/tests/stores/authAndContact.spec.ts) | 4 | 认证与通讯录状态 |
+| [`frontend/tests/stores/chatRealtimeReconnect.spec.ts`](../frontend/tests/stores/chatRealtimeReconnect.spec.ts) | 2 | 会话实时态与重连后增量 |
+| [`frontend/tests/stores/groupAndAdmin.spec.ts`](../frontend/tests/stores/groupAndAdmin.spec.ts) | 3 | 群管理与后台相关 store |
+| [`frontend/tests/chatUtils.spec.ts`](../frontend/tests/chatUtils.spec.ts) | 2 | 会话工具函数 |
 
 ---
 
@@ -141,3 +195,11 @@ export LOG_LEVEL=warn
    - `im-msg-deliver` 默认单 Worker（`MQ_WORKER_COUNT=1`、`read_count=100`）在 DB 慢查询积压时处理 100 条批次超过 `MQ_RECLAIM_MIN_IDLE=30s`，`reclaim-*` 协程提前认领仍在处理但尚未 `markDone`/`XAck` 的消息导致重复投递（Run 1 出现 29 次重复 `msg.push`）。将 `MQ_RECLAIM_MIN_IDLE` 调至 `120s` 后 Run 2 重复归零。
 4. **`conv:lock` 释放时机与 `XADD` 之间存在极窄乱序窗口**：
    - `MessageService.commitNewMessage` 在函数 `defer` 中释放 Redis `conv:lock:{conversation_id}` 后，才由 `SendMessage` 调用 `XADD im:stream:messages`。在极端 DB/调度卡顿下（Run 1），同一会话并发发送方可能出现后提交的 `seq` 先进入 Stream（Run 1 观测到 16 次乱序）；在 Run 2 无卡顿场景下乱序为 `0`。后续集成如需彻底消除该理论窗口，可考虑将 `XADD` 纳入锁保护或由消费端/发送前协调保证有序。
+
+---
+
+## 三、集成状态
+
+- **集成分支**：`agent/stage10-integration`（由 `main` `e5a9069` 分出后，依次 `--no-ff` 合入上述三个作者分支）。
+- **合入范围**：30 个文件，+5270 / −139。作者分支之间文件无重叠。
+- **尚未合入 `main`，也未向远程推送。** 第 11 阶段（Docker 部署与完整文档）未开始。
