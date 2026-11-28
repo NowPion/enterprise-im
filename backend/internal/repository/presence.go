@@ -35,27 +35,62 @@ type ConnLease struct {
 	DeviceID, NodeID, ConnID string
 }
 
+// PresenceOption customizes PresenceRepository behavior (primarily for isolated tests).
+type PresenceOption func(*PresenceRepository)
+
+// WithPresenceKeyPrefix scopes all PresenceRepository Redis keys and PubSub channels under prefix.
+func WithPresenceKeyPrefix(prefix string) PresenceOption {
+	return func(repo *PresenceRepository) {
+		repo.prefix = strings.TrimSpace(prefix)
+	}
+}
+
 type PresenceRepository struct {
-	db  *gorm.DB
-	rdb *redis.Client
-	ttl time.Duration
-	bus string
+	db     *gorm.DB
+	rdb    *redis.Client
+	ttl    time.Duration
+	bus    string
+	prefix string
 }
 
-func NewPresenceRepository(db *gorm.DB, rdb *redis.Client, ttl time.Duration) *PresenceRepository {
-	return &PresenceRepository{db: db, rdb: rdb, ttl: ttl, bus: "im:ws:" + strconv.Itoa(rdb.Options().DB) + ":"}
+func NewPresenceRepository(db *gorm.DB, rdb *redis.Client, ttl time.Duration, opts ...PresenceOption) *PresenceRepository {
+	repo := &PresenceRepository{db: db, rdb: rdb, ttl: ttl}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(repo)
+		}
+	}
+	dbIdx := 0
+	if rdb != nil {
+		dbIdx = rdb.Options().DB
+	}
+	repo.bus = "im:ws:" + repo.prefix + strconv.Itoa(dbIdx) + ":"
+	return repo
 }
 
-func (repo *PresenceRepository) PresenceChannel() string { return repo.bus + "presence" }
+func (repo *PresenceRepository) PresenceChannel() string      { return repo.bus + "presence" }
+func (repo *PresenceRepository) userKey(user string) string   { return repo.prefix + redisPresenceUserPrefix + user }
+func (repo *PresenceRepository) connKey(connID string) string { return repo.prefix + "im:presence:conn:" + connID }
+func (repo *PresenceRepository) routeUserKey(user string) string {
+	return repo.prefix + "im:route:user:" + user
+}
+func (repo *PresenceRepository) routeSessionKey(session string) string {
+	return repo.prefix + "im:route:session:" + session
+}
+func (repo *PresenceRepository) DeadlinesKey() string { return repo.prefix + deadlinesKey }
+func (repo *PresenceRepository) ActiveKey() string    { return repo.prefix + "im:presence:active" }
+func (repo *PresenceRepository) OfflinePendingKey() string {
+	return repo.prefix + offlinePendingKey
+}
 
 func (repo *PresenceRepository) change(ctx context.Context, op string, lease ConnLease) (int64, error) {
 	user := strconv.FormatUint(lease.UserID, 10)
 	session := strconv.FormatUint(lease.SessionID, 10)
-	keys := []string{redisPresenceUserPrefix + user, "im:presence:conn:" + lease.ConnID, "im:route:user:" + user,
-		"im:route:session:" + session, deadlinesKey, "im:presence:active", offlinePendingKey}
+	keys := []string{repo.userKey(user), repo.connKey(lease.ConnID), repo.routeUserKey(user),
+		repo.routeSessionKey(session), repo.DeadlinesKey(), repo.ActiveKey(), repo.OfflinePendingKey()}
 	member := user + "/" + session + "/" + lease.NodeID + ":" + lease.ConnID
 	value, err := leaseChange.Run(ctx, repo.rdb, keys, op, user, session, lease.DeviceID, lease.NodeID, lease.ConnID,
-		repo.ttl.Milliseconds(), (repo.ttl + 15*time.Second).Milliseconds(), member, repo.PresenceChannel()).Int64()
+		repo.ttl.Milliseconds(), (repo.ttl + 15*time.Second).Milliseconds(), member, repo.PresenceChannel(), repo.prefix+"im:presence:conn:").Int64()
 	if err == nil && value == -1 {
 		return 0, ErrLeaseLost
 	}
@@ -101,7 +136,7 @@ func (repo *PresenceRepository) persistOffline(ctx context.Context, userID strin
 	if err != nil {
 		return err
 	}
-	return acknowledgeOffline.Run(ctx, repo.rdb, []string{offlinePendingKey}, userID, millis).Err()
+	return acknowledgeOffline.Run(ctx, repo.rdb, []string{repo.OfflinePendingKey()}, userID, millis).Err()
 }
 
 func (repo *PresenceRepository) ReapExpired(ctx context.Context) error {
@@ -109,7 +144,7 @@ func (repo *PresenceRepository) ReapExpired(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	members, err := repo.rdb.ZRangeByScore(ctx, deadlinesKey, &redis.ZRangeBy{Min: "-inf", Max: strconv.FormatInt(now.UnixMilli(), 10), Count: 128}).Result()
+	members, err := repo.rdb.ZRangeByScore(ctx, repo.DeadlinesKey(), &redis.ZRangeBy{Min: "-inf", Max: strconv.FormatInt(now.UnixMilli(), 10), Count: 128}).Result()
 	if err != nil {
 		return err
 	}
@@ -126,7 +161,7 @@ func (repo *PresenceRepository) ReapExpired(ctx context.Context) error {
 			return err
 		}
 	}
-	pending, err := repo.rdb.ZRangeWithScores(ctx, offlinePendingKey, 0, 127).Result()
+	pending, err := repo.rdb.ZRangeWithScores(ctx, repo.OfflinePendingKey(), 0, 127).Result()
 	if err != nil {
 		return err
 	}
@@ -147,7 +182,7 @@ func SplitRoute(route string) (node, conn string, ok bool) {
 }
 
 func (repo *PresenceRepository) SessionRoutes(ctx context.Context, sessionID uint64) ([]string, error) {
-	return repo.rdb.SMembers(ctx, "im:route:session:"+strconv.FormatUint(sessionID, 10)).Result()
+	return repo.rdb.SMembers(ctx, repo.routeSessionKey(strconv.FormatUint(sessionID, 10))).Result()
 }
 
 func (repo *PresenceRepository) FriendIDs(ctx context.Context, userID uint64) ([]uint64, error) {
@@ -180,7 +215,7 @@ func (repo *PresenceRepository) LiveConnections(ctx context.Context, candidates 
 	pipe := repo.rdb.Pipeline()
 	checks := make([]*redis.SliceCmd, 0, len(candidates))
 	for _, lease := range candidates {
-		checks = append(checks, pipe.HMGet(ctx, "im:presence:conn:"+lease.ConnID, "user_id", "session_id", "device_id", "node_id"))
+		checks = append(checks, pipe.HMGet(ctx, repo.connKey(lease.ConnID), "user_id", "session_id", "device_id", "node_id"))
 	}
 	if _, err := pipe.Exec(ctx); err != nil {
 		return nil, err

@@ -181,10 +181,11 @@ func TestLiveReconnectAfterLastLeaseExpiryDeliversOfflineThenOnlineToFriend(t *t
 	}
 	defer db.Where("(user_id = ? AND friend_id = ?) OR (user_id = ? AND friend_id = ?)", target.ID, friend.ID, friend.ID, target.ID).Delete(&model.Friendship{})
 
-	friendStore := repository.NewPresenceRepository(db, rdb, 10*time.Second)
-	targetStore := repository.NewPresenceRepository(db, rdb, 250*time.Millisecond)
-
 	nodeID := "ws-m1-node-" + uuid.NewString()
+	presPrefix := "test:" + nodeID + ":"
+	friendStore := repository.NewPresenceRepository(db, rdb, 10*time.Second, repository.WithPresenceKeyPrefix(presPrefix))
+	targetStore := repository.NewPresenceRepository(db, rdb, 250*time.Millisecond, repository.WithPresenceKeyPrefix(presPrefix))
+
 	cfgCopy := *cfg
 	cfgCopy.App.NodeID = nodeID
 	hub := NewHub(&cfgCopy, nil, friendStore, nil)
@@ -220,7 +221,18 @@ func TestLiveReconnectAfterLastLeaseExpiryDeliversOfflineThenOnlineToFriend(t *t
 	}
 	targetUID := strconv.FormatUint(target.ID, 10)
 	friendUID := strconv.FormatUint(friend.ID, 10)
-	defer rdb.Del(ctx, "im:presence:user:"+targetUID, "im:presence:user:"+friendUID)
+	defer rdb.Del(ctx,
+		presPrefix+"im:presence:user:"+targetUID,
+		presPrefix+"im:presence:user:"+friendUID,
+		presPrefix+"im:route:user:"+targetUID,
+		presPrefix+"im:route:user:"+friendUID,
+		presPrefix+"im:route:session:"+strconv.FormatUint(friendClient.lease.SessionID, 10),
+		presPrefix+"im:route:session:"+strconv.FormatUint(target.ID+200, 10),
+		presPrefix+"im:route:session:"+strconv.FormatUint(target.ID+201, 10),
+		friendStore.DeadlinesKey(),
+		friendStore.ActiveKey(),
+		friendStore.OfflinePendingKey(),
+	)
 	defer friendStore.Release(ctx, friendClient.lease)
 
 	lease1 := repository.ConnLease{UserID: target.ID, SessionID: target.ID + 200, DeviceID: "web", NodeID: nodeID, ConnID: uuid.NewString()}

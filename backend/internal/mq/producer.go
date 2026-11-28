@@ -36,14 +36,28 @@ func WithExactTrim(exact bool) ProducerOption {
 	}
 }
 
+// WithProducerStreams overrides the target Redis Stream keys for messages and events (primarily for isolated tests).
+func WithProducerStreams(messagesStream, eventsStream string) ProducerOption {
+	return func(p *StreamProducer) {
+		if trimmed := strings.TrimSpace(messagesStream); trimmed != "" {
+			p.messagesStream = trimmed
+		}
+		if trimmed := strings.TrimSpace(eventsStream); trimmed != "" {
+			p.eventsStream = trimmed
+		}
+	}
+}
+
 // StreamProducer publishes committed chat messages and domain events to Redis Streams
 // and enforces retention/length trimming guarded by active Consumer Group progress.
 type StreamProducer struct {
-	rdb       *redis.Client
-	cfg       config.MQConfig
-	log       *slog.Logger
-	nowFn     func() time.Time
-	exactTrim bool
+	rdb            *redis.Client
+	cfg            config.MQConfig
+	log            *slog.Logger
+	nowFn          func() time.Time
+	exactTrim      bool
+	messagesStream string
+	eventsStream   string
 }
 
 var _ Producer = (*StreamProducer)(nil)
@@ -54,10 +68,12 @@ func NewProducer(rdb *redis.Client, cfg config.MQConfig, log *slog.Logger, opts 
 		log = slog.Default()
 	}
 	p := &StreamProducer{
-		rdb:   rdb,
-		cfg:   NormalizeMQConfig(cfg),
-		log:   log,
-		nowFn: func() time.Time { return time.Now().UTC() },
+		rdb:            rdb,
+		cfg:            NormalizeMQConfig(cfg),
+		log:            log,
+		nowFn:          func() time.Time { return time.Now().UTC() },
+		messagesStream: StreamMessages,
+		eventsStream:   StreamEvents,
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -95,7 +111,7 @@ func (p *StreamProducer) PublishMessage(ctx context.Context, msg MessageRecord) 
 	}
 
 	entryID, err := p.rdb.XAdd(ctx, &redis.XAddArgs{
-		Stream: StreamMessages,
+		Stream: p.messagesStream,
 		ID:     "*",
 		Values: values,
 	}).Result()
@@ -106,7 +122,7 @@ func (p *StreamProducer) PublishMessage(ctx context.Context, msg MessageRecord) 
 			slog.Uint64("seq", msg.Seq),
 			slog.String("error", sanitizeErrorSummary(err)),
 		)
-		return "", fmt.Errorf("%w: xadd %s: %s", ErrStreamPublishFailed, StreamMessages, sanitizeErrorSummary(err))
+		return "", fmt.Errorf("%w: xadd %s: %s", ErrStreamPublishFailed, p.messagesStream, sanitizeErrorSummary(err))
 	}
 	return entryID, nil
 }
@@ -178,7 +194,7 @@ func (p *StreamProducer) PublishEvent(ctx context.Context, evt EventRecord) (str
 	}
 
 	entryID, err := p.rdb.XAdd(ctx, &redis.XAddArgs{
-		Stream: StreamEvents,
+		Stream: p.eventsStream,
 		ID:     "*",
 		Values: values,
 	}).Result()
@@ -189,21 +205,21 @@ func (p *StreamProducer) PublishEvent(ctx context.Context, evt EventRecord) (str
 			slog.Uint64("conversation_id", evt.ConversationID),
 			slog.String("error", sanitizeErrorSummary(err)),
 		)
-		return "", fmt.Errorf("%w: xadd %s: %s", ErrStreamPublishFailed, StreamEvents, sanitizeErrorSummary(err))
+		return "", fmt.Errorf("%w: xadd %s: %s", ErrStreamPublishFailed, p.eventsStream, sanitizeErrorSummary(err))
 	}
 	return entryID, nil
 }
 
-// TrimStreams enforces 7-day retention and length caps across im:stream:messages and im:stream:events,
+// TrimStreams enforces 7-day retention and length caps across the configured messages and events streams,
 // strictly trimming only entries already covered (delivered and ACKed) by all required consumer groups.
 func (p *StreamProducer) TrimStreams(ctx context.Context) (TrimReport, error) {
 	if p == nil || p.rdb == nil {
 		return TrimReport{}, fmt.Errorf("%w: redis client unavailable", ErrStreamPublishFailed)
 	}
 	var report TrimReport
-	msgTrimmed, msgErr := p.TrimStream(ctx, StreamMessages, DefaultMessagesGroups())
+	msgTrimmed, msgErr := p.TrimStream(ctx, p.messagesStream, DefaultMessagesGroups())
 	report.MessagesTrimmed = msgTrimmed
-	evtTrimmed, evtErr := p.TrimStream(ctx, StreamEvents, DefaultEventsGroups())
+	evtTrimmed, evtErr := p.TrimStream(ctx, p.eventsStream, DefaultEventsGroups())
 	report.EventsTrimmed = evtTrimmed
 	return report, errors.Join(msgErr, evtErr)
 }

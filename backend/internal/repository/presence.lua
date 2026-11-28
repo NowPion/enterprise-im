@@ -1,5 +1,6 @@
 local op, user, session, device, node, conn = unpack(ARGV, 1, 6)
 local ttl, routeTTL, deadlineMember, channel = unpack(ARGV, 7, 10)
+local connPrefix = ARGV[11] or 'im:presence:conn:'
 local member = node .. ':' .. conn
 local clock = redis.call('TIME')
 local now = clock[1] * 1000 + math.floor(clock[2] / 1000)
@@ -32,7 +33,7 @@ end
 local devices, count, distinct = {}, 0, 0
 for _, route in ipairs(redis.call('SMEMBERS', KEYS[3])) do
     local connID = string.match(route, '([^:]+)$')
-    local fields = redis.call('HMGET', 'im:presence:conn:' .. connID, 'user_id', 'device_id', 'node_id')
+    local fields = redis.call('HMGET', connPrefix .. connID, 'user_id', 'device_id', 'node_id')
     if fields[1] == user and fields[2] and fields[3] and fields[3] .. ':' .. connID == route then
         count = count + 1
         if not devices[fields[2]] then

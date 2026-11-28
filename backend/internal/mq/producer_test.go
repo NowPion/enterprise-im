@@ -147,8 +147,13 @@ func TestLiveProducerXAddAndSafeRetentionTrim(t *testing.T) {
 	rdb, cfg := loadLiveRedisForMQTest(t)
 	ctx := context.Background()
 
-	// 1. Test canonical XADD fields on frozen StreamMessages and StreamEvents.
-	p := NewProducer(rdb, cfg.MQ, nil)
+	// 1. Test canonical XADD fields on isolated test messages and events streams (preserving global streams).
+	streamSuffix := uuid.NewString()
+	msgsStream := "im:stream:test:prod:messages:" + streamSuffix
+	evtsStream := "im:stream:test:prod:events:" + streamSuffix
+	t.Cleanup(func() { _ = rdb.Del(context.Background(), msgsStream, evtsStream).Err() })
+
+	p := NewProducer(rdb, cfg.MQ, nil, WithProducerStreams(msgsStream, evtsStream))
 	msgID := uint64(time.Now().UnixNano())
 	entryID, err := p.PublishMessage(ctx, MessageRecord{
 		MessageID:      msgID,
@@ -160,9 +165,8 @@ func TestLiveProducerXAddAndSafeRetentionTrim(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PublishMessage failed: %v", err)
 	}
-	t.Cleanup(func() { _ = rdb.XDel(context.Background(), StreamMessages, entryID).Err() })
 
-	entries, err := rdb.XRange(ctx, StreamMessages, entryID, entryID).Result()
+	entries, err := rdb.XRange(ctx, msgsStream, entryID, entryID).Result()
 	if err != nil || len(entries) != 1 {
 		t.Fatalf("read back message stream entry: %v len=%d", err, len(entries))
 	}
@@ -173,7 +177,7 @@ func TestLiveProducerXAddAndSafeRetentionTrim(t *testing.T) {
 		vals["seq"] != "7" ||
 		vals["sender_id"] != "10001" ||
 		vals["payload_ref"] != fmt.Sprintf("messages:%d", msgID) {
-		t.Fatalf("unexpected im:stream:messages fields: %+v", vals)
+		t.Fatalf("unexpected %s fields: %+v", msgsStream, vals)
 	}
 
 	evtID := "evt-" + uuid.NewString()
@@ -191,16 +195,15 @@ func TestLiveProducerXAddAndSafeRetentionTrim(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PublishEvent failed: %v", err)
 	}
-	t.Cleanup(func() { _ = rdb.XDel(context.Background(), StreamEvents, evtEntryID).Err() })
 
-	evtEntries, err := rdb.XRange(ctx, StreamEvents, evtEntryID, evtEntryID).Result()
+	evtEntries, err := rdb.XRange(ctx, evtsStream, evtEntryID, evtEntryID).Result()
 	if err != nil || len(evtEntries) != 1 {
 		t.Fatalf("read back event stream entry: %v len=%d", err, len(evtEntries))
 	}
 	ev := evtEntries[0].Values
 	if ev["kind"] != KindRead || ev["event_id"] != evtID || ev["conversation_id"] != "99001" ||
 		ev["last_delivered_seq"] != "7" || ev["last_read_seq"] != "7" || ev["target_user_ids"] != "10001" {
-		t.Fatalf("unexpected im:stream:events fields: %+v", ev)
+		t.Fatalf("unexpected %s fields: %+v", evtsStream, ev)
 	}
 
 	// 2. Test safe retention trimming on a dedicated test stream (never touching global stream entries).

@@ -147,14 +147,41 @@ type StreamEventInput struct {
 	Payload        map[string]any
 }
 
+// StreamPublisherOption customizes RedisStreamPublisher behavior.
+type StreamPublisherOption func(*RedisStreamPublisher)
+
+// WithStreamKeys overrides the target Redis Stream keys for messages and events (primarily for isolated tests).
+func WithStreamKeys(messagesKey, eventsKey string) StreamPublisherOption {
+	return func(p *RedisStreamPublisher) {
+		if trimmed := strings.TrimSpace(messagesKey); trimmed != "" {
+			p.messagesKey = trimmed
+		}
+		if trimmed := strings.TrimSpace(eventsKey); trimmed != "" {
+			p.eventsKey = trimmed
+		}
+	}
+}
+
 // RedisStreamPublisher publishes committed messages and events to Redis Streams via XADD.
 type RedisStreamPublisher struct {
-	rdb *redis.Client
+	rdb         *redis.Client
+	messagesKey string
+	eventsKey   string
 }
 
 // NewRedisStreamPublisher constructs a RedisStreamPublisher.
-func NewRedisStreamPublisher(rdb *redis.Client) *RedisStreamPublisher {
-	return &RedisStreamPublisher{rdb: rdb}
+func NewRedisStreamPublisher(rdb *redis.Client, opts ...StreamPublisherOption) *RedisStreamPublisher {
+	p := &RedisStreamPublisher{
+		rdb:         rdb,
+		messagesKey: StreamMessagesKey,
+		eventsKey:   StreamEventsKey,
+	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(p)
+		}
+	}
+	return p
 }
 
 // PublishMessage appends a committed message record to im:stream:messages via XADD.
@@ -185,7 +212,7 @@ func (p *RedisStreamPublisher) PublishMessage(ctx context.Context, msg StreamMes
 		values["recipient_ids"] = joinUint64s(dedupePositiveUint64(msg.RecipientIDs))
 	}
 	return p.rdb.XAdd(ctx, &redis.XAddArgs{
-		Stream: StreamMessagesKey,
+		Stream: p.messagesKey,
 		ID:     "*",
 		Values: values,
 	}).Err()
@@ -237,7 +264,7 @@ func (p *RedisStreamPublisher) PublishEvent(ctx context.Context, evt StreamEvent
 		}
 	}
 	return p.rdb.XAdd(ctx, &redis.XAddArgs{
-		Stream: StreamEventsKey,
+		Stream: p.eventsKey,
 		ID:     "*",
 		Values: values,
 	}).Err()
